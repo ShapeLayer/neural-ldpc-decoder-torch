@@ -29,9 +29,9 @@ pillow==11.3.0
 sympy==1.14.0
     # via torch
 torch==2.8.0
-    # via neural-ldpc-decoder
+    # via neural-ldpc-decoder-torch
     # via torchvision
 torchvision==0.23.0
-    # via neural-ldpc-decoder
+    # via neural-ldpc-decoder-torch
 typing-extensions==4.15.0
     # via torch

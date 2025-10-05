@@ -1,7 +1,7 @@
 [project]
-name = "neural_ldpc_decoder"
+name = "neural_ldpc_decoder_torch"
 version = "0.1.0"
-description = "Add your description here"
+description = "Neural LDPC Decoder Torch Implementation"
 authors = [
     { name = "Jonghyeon Park", email = "shapelayer.dev@gmail.com" }
 ]
@@ -24,4 +24,7 @@ dev-dependencies = []
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/neural_ldpc_decoder"]
+packages = [
+    "src/neural_ldpc_decoder",
+    "src/boosted_neural_ldpc_decoder"
+]

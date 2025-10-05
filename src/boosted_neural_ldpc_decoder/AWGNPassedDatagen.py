@@ -1,4 +1,7 @@
+from typing import Any
+
 import numpy as np
+from numpy import ndarray, dtype
 from numpy.random import RandomState
 
 class AWGNPassedDatagen:
@@ -49,7 +52,7 @@ class AWGNPassedDatagen:
         word_length: int,
         Z: int,
         is_y_all_zero: bool=True,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[list[ndarray[tuple[Any, ...], dtype[Any]]], list[ndarray[tuple[Any, ...], dtype[Any]]]]:
         """
         Generates origin bits and AWGN-Passed LLR set for training or testing a neural network decoder.
 
@@ -64,12 +67,13 @@ class AWGNPassedDatagen:
         x: list[np.ndarray] = []
         y: list[np.ndarray] = []
 
+        gen_x = self._gen_x
         gen_y = self._gen_y_all_zero if is_y_all_zero else self._gen_y_wordgen
 
         for each_sf in self.snr_sigma:
             y_i = gen_y(word_length, Z)
 
-            x_p_i = self._gen_x(word_length, Z) * each_sf + -1 ** (1 - y_i)
+            x_p_i = gen_x(word_length) * each_sf + -1 ** (1 - y_i)
             x_llr_i = 2 * x_p_i / (each_sf ** 2)
             x_llr_i = x_llr_i.astype(self.x_dtype)
 
@@ -78,7 +82,7 @@ class AWGNPassedDatagen:
 
         return x, y
 
-    def _gen_x(self, word_length: int, Z: int) -> np.ndarray:
+    def _gen_x(self, word_length: int) -> np.ndarray:
         return self._awgn_noise_random.normal(0., 1., size=(word_length, self.gen_matrix.shape[1])).astype(self.x_dtype)
 
     def _gen_y_all_zero(self, word_length: int, Z: int) -> np.ndarray:
