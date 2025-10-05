@@ -140,8 +140,8 @@ class ConnectingMatrix:
 
         # W_output
         k = 0
-        for j in range(0, self.basegraph_binary.shape[1], 1):
-            for i in range(0, self.basegraph_binary.shape[0], 1):
+        for j in range(self.basegraph_binary.shape[1]):
+            for i in range(self.basegraph_binary.shape[0]):
                 if (self.basegraph_binary[i, j] == 1):
                     idx_row = np.cumsum(self.basegraph_binary[i, 0:j + 1])[-1] - 1
                     idx_col = np.cumsum(self.basegraph_binary[0: i + 1, j])[-1] - 1
@@ -153,8 +153,8 @@ class ConnectingMatrix:
 
         # W_skipconn2even
         k = 0
-        for j in range(0, self.basegraph_binary.shape[1], 1):
-            for i in range(0, self.basegraph_binary.shape[0], 1):
+        for j in range(self.basegraph_binary.shape[1]):
+            for i in range(self.basegraph_binary.shape[0]):
                 if (self.basegraph_binary[i, j] == 1):
                     self.W_skipconn2even[j, k] = 1.0
                     k += 1
