@@ -22,31 +22,30 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                 ucn_weight_sharing=0,
                 vn_weight_sharing=0,
             ),
-            # converted from sharing
 
-            decoding_type: DecoderType=DecoderType.QMS,
-            decoder_qms_qbit: int=5, # converted from q_bit
-            fixed_iterative_nodes: list[int]=[],
+            decoding_type: DecoderType = DecoderType.QMS,
+            decoder_qms_qbit: int = 5,
+            fixed_iterative_nodes: list[int] = [],
             # converted from fixed_iter
             # fixed_iter directions fixed range(0, fixed_iter)
             # but fixed_iterative_nodes is list of int
 
-            fixed_iterative_nodes_init_weight: int=0, # converted from fixed_init
-            allowed_weight_range: Clipping=Clipping(start=0, end=2), # converted from min_weight, max_weight
-            allowed_bias_range: Clipping=Clipping(start=0, end=2),
-            allowed_llr_range: Clipping=Clipping(abs=20.0), # converted from clip_llr
-            dtype_cn_weight: torch.dtype=torch.float32,
-            dtype_ucn_weight: torch.dtype=torch.float32,
-            dtype_vn_weight: torch.dtype=torch.float32,
-            init_cn_weight: float=1,  # converted from init_weight
-            init_ucn_weight: float=1, # converted from init_weight
-            init_vn_weight: float=1,  # converted from init_VN_weight
-            dtype_cn_bias: torch.dtype=torch.float32,
-            dtype_ucn_bias: torch.dtype=torch.float32,
-            dtype_vn_bias: torch.dtype=torch.float32,
-            init_cn_bias: float=1,
-            init_ucn_bias: float=1,
-            init_vn_bias: float=1,
+            fixed_iterative_nodes_init_weight: int = 0,
+            allowed_weight_range: Clipping = Clipping(start=0, end=2),
+            allowed_bias_range: Clipping = Clipping(start=0, end=2),
+            allowed_llr_range: Clipping = Clipping(abs=20.0),
+            dtype_cn_weight: torch.dtype = torch.float32,
+            dtype_ucn_weight: torch.dtype = torch.float32,
+            dtype_vn_weight: torch.dtype = torch.float32,
+            init_cn_weight: float = 1,
+            init_ucn_weight: float = 1,
+            init_vn_weight: float = 1,
+            dtype_cn_bias: torch.dtype = torch.float32,
+            dtype_ucn_bias: torch.dtype = torch.float32,
+            dtype_vn_bias: torch.dtype = torch.float32,
+            init_cn_bias: float = 1,
+            init_ucn_bias: float = 1,
+            init_vn_bias: float = 1,
     ):
         super(BoostedNeuralLDPCDecoder, self).__init__()
         self.iter_node_counts = iter_node_counts
@@ -83,7 +82,6 @@ class BoostedNeuralLDPCDecoder(nn.Module):
         self.init_ucn_bias = init_ucn_bias
         self.init_vn_bias = init_vn_bias
 
-        # Register matrices as buffers (non-trainable parameters)
         self.register_buffer('W_odd2even', self.conn_mat.W_odd2even)
         self.register_buffer('W_skipconn2even', self.conn_mat.W_skipconn2even)
         self.register_buffer('W_even2odd', self.conn_mat.W_even2odd)
@@ -232,8 +230,8 @@ class BoostedNeuralLDPCDecoder(nn.Module):
 
         # Initialize LLR
         prev_llr = torch.zeros((batch_size, self.Z, self.sum_edge),
-                          dtype=torch.float32, device=self.conn_mat.device)
-        
+                               dtype=torch.float32, device=self.conn_mat.device)
+
         outputs = []
 
         for curr_iter in range(self.iter_node_counts):

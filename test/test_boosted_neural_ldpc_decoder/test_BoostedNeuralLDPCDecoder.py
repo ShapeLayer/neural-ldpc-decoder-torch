@@ -4,14 +4,18 @@ import torch
 import torch.optim as optim
 from datetime import datetime
 
+from math import floor
+
 from boosted_neural_ldpc_decoder import ConnectingMatrixTorch, ConnectingMatrix, AWGNPassedDatagen
 from boosted_neural_ldpc_decoder.BoostedNeuralLDPCDecoder import BoostedNeuralLDPCDecoder
 from boosted_neural_ldpc_decoder.struct.Clipping import Clipping
 from boosted_neural_ldpc_decoder.struct.DecoderType import DecoderType
 from boosted_neural_ldpc_decoder.LDPCDecoderLoss import LDPCDecoderLoss
+from boosted_neural_ldpc_decoder.struct.LearningRate import LearningRate
 from boosted_neural_ldpc_decoder.struct.NodeWeightSharingConfig import NodeWeightSharingConfig
 from boosted_neural_ldpc_decoder.struct.Puncture import Puncture
 from boosted_neural_ldpc_decoder.struct.Shortening import Shortening
+
 
 class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
     def test_boosted_neural_ldpc_decoder(self):
@@ -77,7 +81,6 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         # AWGN
         snr_matrix = np.array([2, 2.5, 3.0, 3.5, 4.0])
 
-
         fixed_iterative_nodes: list[int] = []
         """
         List of Fixed iteration Nodes
@@ -94,13 +97,16 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         # Model
         batch_size = word_length = 50
 
-        # Training
-        learning_rate = .001
-        learning_rate_discount = 0
-        learning_rate_step = 0
-        train_is_y_all_zero = True
-        train_total_epochs = 10000
+        train_word_length = 10000
 
+        # Training
+        learning_rate = LearningRate(
+            initial_lr=.001,
+            decay_rate=0,
+            decay_steps=0,
+        )
+        train_is_y_all_zero = True
+        train_total_epochs = 100000
 
         model = BoostedNeuralLDPCDecoder(
             iter_node_counts=iter_node_counts,
@@ -129,7 +135,7 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         ).to(device)
 
         criterion = LDPCDecoderLoss()
-        optimizer = optim.Adam(model.get_trainable_parameters(), lr=learning_rate)
+        optimizer = optim.Adam(model.get_trainable_parameters(), lr=learning_rate())
 
         N, M = conn.N, conn.M
         # TODO
@@ -149,34 +155,37 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
 
         for epoch in range(train_total_epochs):
             x, y = [], []
-            for iteration in range(iter_node_counts):
-                if not x or not y:
-                    x, y = datagen(
-                        word_length=word_length,
-                        Z=Z,
-                        is_y_all_zero=train_is_y_all_zero,
-                    )
-                x_i, y_i = x.pop(0), y.pop(0)
+            batch_size_per_word_length = floor(train_word_length / batch_size)
+            for _i in range(batch_size_per_word_length):
+                for iteration in range(iter_node_counts):
+                    if not x or not y:
+                        x, y = datagen(
+                            word_length=batch_size,
+                            Z=Z,
+                            is_y_all_zero=train_is_y_all_zero,
+                        )
+                    x_i, y_i = x.pop(0), y.pop(0)
 
-                x_i = np.reshape(x_i, [batch_size, N, Z])
-                y_i = np.reshape(y_i, [batch_size, N * Z])
+                    x_i = np.reshape(x_i, [batch_size, N, Z])
+                    y_i = np.reshape(y_i, [batch_size, N * Z])
 
-                x_i = torch.tensor(x_i, dtype=torch.float32, device=device)
-                y_i = torch.tensor(y_i, dtype=torch.float32, device=device)
+                    x_i = torch.tensor(x_i, dtype=torch.float32, device=device)
+                    y_i = torch.tensor(y_i, dtype=torch.float32, device=device)
 
-                model.train()
-                outputs = model(x_i)
+                    model.train()
+                    outputs = model(x_i)
 
-                loss = criterion(outputs[iteration], y_i)
+                    loss = criterion(outputs[iteration], y_i)
 
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
 
                 if epoch % 100 == 0:
                     print(f"epoch {epoch}/{train_total_epochs}, iter {iteration}, loss {loss.item()}")
             if epoch % 10 == 0:
                 print(f"Cycle {epoch} completed at {datetime.now()}")
+
 
 if __name__ == '__main__':
     unittest.main()

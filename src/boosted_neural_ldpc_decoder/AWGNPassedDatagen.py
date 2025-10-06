@@ -4,6 +4,10 @@ import numpy as np
 from numpy import ndarray, dtype
 from numpy.random import RandomState
 
+from boosted_neural_ldpc_decoder.Functions import Functions
+from boosted_neural_ldpc_decoder.struct.DecoderType import DecoderType
+
+
 class AWGNPassedDatagen:
     """
     Create a dataset for training or testing a neural network decoder.
@@ -14,19 +18,20 @@ class AWGNPassedDatagen:
     a lot of memory space. But this dataset can be generated in real time, and there
     is no need to store data in the memory that already be used.
     """
+
     def __init__(
-        self,
-        N: int,
-        M: int,
-        snr_db: np.ndarray,
+            self,
+            N: int,
+            M: int,
+            snr_db: np.ndarray,
 
-        awgn_noise_seed: int=2042,
-        wordgen_random_seed: int=1074,
+            awgn_noise_seed: int = 2042,
+            wordgen_random_seed: int = 1074,
 
-        x_dtype=np.float32,
-        y_dtype=np.int64,
+            x_dtype=np.float32,
+            y_dtype=np.int64,
 
-        gen_matrix: np.ndarray=None,
+            gen_matrix: np.ndarray = None,
     ):
         self.N = N
         self.M = M
@@ -48,10 +53,12 @@ class AWGNPassedDatagen:
         return self._gendata(*args, **kwargs)
 
     def _gendata(
-        self,
-        word_length: int,
-        Z: int,
-        is_y_all_zero: bool=True,
+            self,
+            word_length: int,
+            Z: int,
+            is_y_all_zero: bool = True,
+            decoding_type: DecoderType = DecoderType.MS,
+            decoder_qms_qbit: int = 5
     ) -> tuple[list[ndarray[tuple[Any, ...], dtype[Any]]], list[ndarray[tuple[Any, ...], dtype[Any]]]]:
         """
         Generates origin bits and AWGN-Passed LLR set for training or testing a neural network decoder.
@@ -59,7 +66,14 @@ class AWGNPassedDatagen:
         :param word_length:
         :param Z:
         :param is_y_all_zero:
-        :return:
+        :param decoding_type:
+        :param decoder_qms_qbit:
+
+        If `decoding_type` is `DecoderType.QMS`, the generated values are quantized with `decoder_qms_qbit`.
+
+        IMPORTANT: This method NOT generates `word_length` size array.
+
+        :return: length len(snr_db) of array that contains (word_length, K * Z)-shape np.ndarray
         """
         if word_length <= 0:
             raise ValueError("word_length must be positive integer")
@@ -75,6 +89,8 @@ class AWGNPassedDatagen:
 
             x_p_i = gen_x(word_length) * each_sf + -1 ** (1 - y_i)
             x_llr_i = 2 * x_p_i / (each_sf ** 2)
+            if decoding_type == DecoderType.QMS:
+                x_llr_i = Functions.Cal_MSA_Q(x_llr_i, decoder_qms_qbit)
             x_llr_i = x_llr_i.astype(self.x_dtype)
 
             x.append(x_llr_i)

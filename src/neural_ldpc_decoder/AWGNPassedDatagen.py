@@ -1,6 +1,7 @@
 import numpy as np
 from numpy.random import RandomState
 
+
 class AWGNPassedDatagen:
     """
     Create a dataset for training or testing a neural network decoder.
@@ -11,19 +12,20 @@ class AWGNPassedDatagen:
     a lot of memory space. But this dataset can be generated in real time, and there
     is no need to store data in the memory that already be used.
     """
+
     def __init__(
-        self,
-        N: int,
-        M: int,
-        snr_db: np.ndarray,
+            self,
+            N: int,
+            M: int,
+            snr_db: np.ndarray,
 
-        awgn_noise_seed: int=2042,
-        wordgen_random_seed: int=1074,
+            awgn_noise_seed: int = 2042,
+            wordgen_random_seed: int = 1074,
 
-        x_dtype=np.float32,
-        y_dtype=np.int64,
+            x_dtype=np.float32,
+            y_dtype=np.int64,
 
-        gen_matrix: np.ndarray=None,
+            gen_matrix: np.ndarray = None,
     ):
         self.N = N
         self.M = M
@@ -45,10 +47,10 @@ class AWGNPassedDatagen:
         return self._gendata(*args, **kwargs)
 
     def _gendata(
-        self,
-        word_length: int,
-        Z: int,
-        is_y_all_zero: bool=True,
+            self,
+            word_length: int,
+            Z: int,
+            is_y_all_zero: bool = True,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Generates origin bits and AWGN-Passed LLR set for training or testing a neural network decoder.

@@ -1,10 +1,12 @@
 import torch
 import torch.nn as nn
 
+
 class LDPCDecoderLoss(nn.Module):
     """
     Custom loss function for LDPC decoder training
     """
+
     def __init__(self, loss_type=0, iter_weights=None):
         """
         Initialize loss function
@@ -16,7 +18,7 @@ class LDPCDecoderLoss(nn.Module):
         super(LDPCDecoderLoss, self).__init__()
         self.loss_type = loss_type
         self.iter_weights = iter_weights
-        
+
     def forward(self, outputs, targets, iteration_idx=None):
         """
         Compute loss for decoder outputs
@@ -44,7 +46,7 @@ class LDPCDecoderLoss(nn.Module):
         else:
             # Single output tensor
             return self._compute_single_loss(outputs, targets)
-    
+
     def _compute_single_loss(self, output, targets, iter_idx=0):
         """Compute loss for a single output tensor"""
         if self.loss_type == 0:  # BCE with logits
@@ -63,11 +65,11 @@ class LDPCDecoderLoss(nn.Module):
             else:
                 # Default increasing weight by iteration
                 weight = 1.0 + 0.1 * iter_idx
-                
+
             loss = weight * nn.functional.binary_cross_entropy_with_logits(
                 output, targets, reduction='mean'
             )
         else:
             loss = torch.tensor(0.0, device=output.device)
-            
+
         return loss

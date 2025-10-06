@@ -1,6 +1,18 @@
 from boosted_neural_ldpc_decoder.struct.NodeType import NodeType
 
+
 class NodeWeightSharingConfig:
+    """
+    Derived from ghy1228/LDPC_Error_Floor
+
+    0: No weights
+    1: edge, iter
+    2: node, iter
+    3: iter
+    4: edge (Tempolar sharing)
+    5: Node (Tempolar sharing)
+    """
+
     def __init__(
             self,
             cn_weight_sharing: int,

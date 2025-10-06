@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from .ConnectingMatrixTorch import ConnectingMatrixTorch
 
+
 class NeuralLDPCDecoder(nn.Module):
     def __init__(
             self,

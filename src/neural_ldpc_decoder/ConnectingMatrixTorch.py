@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from .ConnectingMatrix import ConnectingMatrix
 
+
 class ConnectingMatrixTorch:
     def __init__(
             self,

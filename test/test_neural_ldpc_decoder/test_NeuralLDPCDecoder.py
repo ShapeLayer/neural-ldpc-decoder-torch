@@ -10,6 +10,7 @@ import neural_ldpc_decoder.ConnectingMatrix as ConnectingMatrix
 import neural_ldpc_decoder.ConnectingMatrixTorch as ConnectingMatrixTorch
 import neural_ldpc_decoder.NeuralLDPCDecoder as NeuralLDPCDecoder
 
+
 class test_NeuralLDPCDecoder(unittest.TestCase):
     def test_neural_ldpc_decoder(self):
         # Computing
@@ -30,7 +31,9 @@ class test_NeuralLDPCDecoder(unittest.TestCase):
         iter_node_counts = 25
 
         # AWGN
-        snr = np.array([9.0, 6.05, 4.1, 2.95, 2.25, 1.8, 1.55, 1.3, 1.15, 1.05, 0.94, 0.85, 0.83, 0.81, 0.8, 0.8, 0.8, 0.75, 0.75, 0.7, 0.7, 0.7, 0.7, 0.7, 0.7])
+        snr = np.array(
+            [9.0, 6.05, 4.1, 2.95, 2.25, 1.8, 1.55, 1.3, 1.15, 1.05, 0.94, 0.85, 0.83, 0.81, 0.8, 0.8, 0.8, 0.75, 0.75,
+             0.7, 0.7, 0.7, 0.7, 0.7, 0.7])
 
         # Random generator
         awgn_noise_seed: int = 2042
@@ -69,7 +72,8 @@ class test_NeuralLDPCDecoder(unittest.TestCase):
         ).to(device)
 
         criterion = nn.BCEWithLogitsLoss()
-        optimizers = [optim.Adam([model.weights_var[i], model.biases_var[i]], lr=learning_rate) for i in range(iter_node_counts)]
+        optimizers = [optim.Adam([model.weights_var[i], model.biases_var[i]], lr=learning_rate) for i in
+                      range(iter_node_counts)]
 
         M, N = conn.M, conn.N
         datagen = AWGNPassedDatagen(
@@ -107,6 +111,7 @@ class test_NeuralLDPCDecoder(unittest.TestCase):
                 if epoch % 10 == 0:
                     print(f"epoch {epoch}/{train_total_epochs}, iter {curr_iter}, loss {loss.item()}")
             print(f"Cycle {epoch} completed at {datetime.now()}")
+
 
 if __name__ == '__main__':
     unittest.main()

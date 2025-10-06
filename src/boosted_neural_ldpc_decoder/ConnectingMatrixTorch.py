@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from boosted_neural_ldpc_decoder.ConnectingMatrix import ConnectingMatrix
 
+
 class ConnectingMatrixTorch:
     def __init__(
             self,

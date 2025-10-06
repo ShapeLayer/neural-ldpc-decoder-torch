@@ -1,5 +1,6 @@
 import numpy as np
 
+
 class ConnectingMatrix:
     def __init__(
             self,
@@ -30,8 +31,10 @@ class ConnectingMatrix:
         Weights details:
         W_odd2even -- A Matrix for VN(Variable Node)
         W_even2odd -- A Matrix for CN(Parity Check Node)
+        W_even2odd_with_self -- 
         W_output -- A Matrix for output. The output would become from odd layers.
         W_skipconn2even -- A Matrix for Channel input.
+        W_skipconn2odd
         """
         self.basegraph = basegraph.copy()
         self.M, self.N = self.basegraph.shape
@@ -67,10 +70,12 @@ class ConnectingMatrix:
         self.W_output = np.zeros((self.sum_edge, self.N), dtype=self.dtype_w_output)
         self.W_skipconn2odd = np.zeros((self.M, self.sum_edge), dtype=self.dtype_w_skipconn2odd)
 
-        self.lifting_matrix_1: np.ndarray = np.zeros((self.neurons_per_odd_layer * self.Z, self.neurons_per_odd_layer * self.Z),
-                                   self.dtype_lifting_matrix)
-        self.lifting_matrix_2: np.ndarray = np.zeros((self.neurons_per_odd_layer * self.Z, self.neurons_per_odd_layer * self.Z),
-                                   self.dtype_lifting_matrix)
+        self.lifting_matrix_1: np.ndarray = np.zeros(
+            (self.neurons_per_odd_layer * self.Z, self.neurons_per_odd_layer * self.Z),
+            self.dtype_lifting_matrix)
+        self.lifting_matrix_2: np.ndarray = np.zeros(
+            (self.neurons_per_odd_layer * self.Z, self.neurons_per_odd_layer * self.Z),
+            self.dtype_lifting_matrix)
 
         self._init_conn_matrix()
 
@@ -102,13 +107,13 @@ class ConnectingMatrix:
                         np.sum(self.basegraph_binary[:, j]))  # get the number of connection of the variable node
                     idx = np.argwhere(self.basegraph_binary[:, j] == 1)  # get the indexes
                     for l in range(num_of_conn):  # adding num_of_conn columns to W
-                        vec_tmp = np.zeros((self.sum_edge), dtype=self.dtype_w_odd2even)
+                        vec_tmp = np.zeros(self.sum_edge, dtype=self.dtype_w_odd2even)
                         for r in range(self.M):  # adding one to the right place
                             if self.basegraph_binary[r, j] == 1 and idx[l][0] != r:
-                                idx_row = np.cumsum(self.basegraph_binary[r, 0:j + 1])[-1] - 1
+                                idx_row = np.cumsum(self.basegraph_binary[r, :j + 1])[-1] - 1
                                 odd_layer_node_count = 0
                                 if r > 0:
-                                    odd_layer_node_count = np.cumsum(self.sum_edge_c[0:r])[-1]
+                                    odd_layer_node_count = np.cumsum(self.sum_edge_c[:r])[-1]
                                 vec_tmp[idx_row + odd_layer_node_count] = 1  # offset index adding
                         self.W_odd2even[:, k] = vec_tmp.transpose()
                         k += 1
@@ -119,12 +124,11 @@ class ConnectingMatrix:
         for j in range(self.N):
             for i in range(self.M):
                 if self.basegraph_binary[i, j] == 1:
-                    idx_row = np.cumsum(self.basegraph_binary[i, 0:j + 1])[-1] - 1
-                    idx_col = np.cumsum(self.basegraph_binary[0: i + 1, j])[-1] - 1
+                    idx_row = np.cumsum(self.basegraph_binary[i, :j + 1])[-1] - 1
                     odd_layer_node_count_1 = 0
-                    odd_layer_node_count_2 = np.cumsum(self.sum_edge_c[0:i + 1])[-1]
+                    odd_layer_node_count_2 = np.cumsum(self.sum_edge_c[:i + 1])[-1]
                     if i > 0:
-                        odd_layer_node_count_1 = np.cumsum(self.sum_edge_c[0:i])[-1]
+                        odd_layer_node_count_1 = np.cumsum(self.sum_edge_c[:i])[-1]
                     self.W_even2odd[k, odd_layer_node_count_1:odd_layer_node_count_2] = 1.0
                     self.W_even2odd[k, odd_layer_node_count_1 + idx_row] = 0.0
                     self.W_even2odd_with_self[k, odd_layer_node_count_1:odd_layer_node_count_2] = 1.0
@@ -134,12 +138,11 @@ class ConnectingMatrix:
         k = 0
         for j in range(self.N):
             for i in range(self.M):
-                if (self.basegraph_binary[i, j] == 1):
-                    idx_row = np.cumsum(self.basegraph_binary[i, 0:j + 1])[-1] - 1
-                    idx_col = np.cumsum(self.basegraph_binary[0: i + 1, j])[-1] - 1
+                if self.basegraph_binary[i, j] == 1:
+                    idx_row = np.cumsum(self.basegraph_binary[i, :j + 1])[-1] - 1
                     odd_layer_node_count = 0
                     if i > 0:
-                        odd_layer_node_count = np.cumsum(self.sum_edge_c[0:i])[-1]
+                        odd_layer_node_count = np.cumsum(self.sum_edge_c[:i])[-1]
                     self.W_output[odd_layer_node_count + idx_row, k] = 1.0
             k += 1
 
@@ -147,14 +150,14 @@ class ConnectingMatrix:
         k = 0
         for j in range(self.N):
             for i in range(self.M):
-                if (self.basegraph_binary[i, j] == 1):
+                if self.basegraph_binary[i, j] == 1:
                     self.W_skipconn2even[j, k] = 1.0
                     k += 1
-        
+
         # W_skipconn2odd
         k = 0
         for i in range(self.M):
             for j in range(self.N):
-                if (self.basegraph_binary[i, j] == 1):
+                if self.basegraph_binary[i, j] == 1:
                     self.W_skipconn2odd[i, k] = 1.0
                     k += 1
