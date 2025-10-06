@@ -181,8 +181,8 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
                     loss.backward()
                     optimizer.step()
 
-                if epoch % 100 == 0:
-                    print(f"epoch {epoch}/{train_total_epochs}, iter {iteration}, loss {loss.item()}")
+                    if epoch % 100 == 0:
+                        print(f"epoch {epoch}/{train_total_epochs}, iter {iteration}, loss {loss.item()}")
             if epoch % 10 == 0:
                 print(f"Cycle {epoch} completed at {datetime.now()}")
 
