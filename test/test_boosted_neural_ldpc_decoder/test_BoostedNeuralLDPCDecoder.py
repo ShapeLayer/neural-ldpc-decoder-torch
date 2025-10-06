@@ -97,7 +97,7 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         # Model
         batch_size = word_length = 50
 
-        train_word_length = 10000
+        train_word_length = 1000
 
         # Training
         learning_rate = LearningRate(
@@ -156,8 +156,8 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         for epoch in range(train_total_epochs):
             x, y = [], []
             batch_size_per_word_length = floor(train_word_length / batch_size)
-            for _i in range(batch_size_per_word_length):
-                for iteration in range(iter_node_counts):
+            for iteration in range(iter_node_counts):
+                for _i in range(batch_size_per_word_length):
                     if not x or not y:
                         x, y = datagen(
                             word_length=batch_size,
@@ -181,8 +181,8 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
                     loss.backward()
                     optimizer.step()
 
-                    if epoch % 100 == 0:
-                        print(f"epoch {epoch}/{train_total_epochs}, iter {iteration}, loss {loss.item()}")
+                if epoch % 100 == 0:
+                    print(f"epoch {epoch}/{train_total_epochs}, iter {iteration}, loss {loss.item()}")
             if epoch % 10 == 0:
                 print(f"Cycle {epoch} completed at {datetime.now()}")
 
