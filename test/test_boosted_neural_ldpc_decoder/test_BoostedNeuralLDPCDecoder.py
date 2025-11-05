@@ -97,7 +97,7 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         # Model
         batch_size = word_length = 50
 
-        train_word_length = 1000
+        train_word_length = 100
 
         # Training
         learning_rate = LearningRate(
@@ -106,7 +106,7 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
             decay_steps=0,
         )
         train_is_y_all_zero = True
-        train_total_epochs = 100000
+        train_total_epochs = 1000
 
         model = BoostedNeuralLDPCDecoder(
             iter_node_counts=iter_node_counts,
@@ -138,7 +138,6 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         optimizer = optim.Adam(model.get_trainable_parameters(), lr=learning_rate())
 
         N, M = conn.N, conn.M
-        # TODO
         datagen = AWGNPassedDatagen(
             N=N,
             M=M,

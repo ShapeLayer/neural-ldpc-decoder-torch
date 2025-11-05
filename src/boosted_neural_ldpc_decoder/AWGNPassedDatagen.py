@@ -5,7 +5,10 @@ from numpy import ndarray, dtype
 from numpy.random import RandomState
 
 from boosted_neural_ldpc_decoder.Functions import Functions
+from boosted_neural_ldpc_decoder.struct.Clipping import Clipping
 from boosted_neural_ldpc_decoder.struct.DecoderType import DecoderType
+from boosted_neural_ldpc_decoder.struct.Puncture import Puncture
+from boosted_neural_ldpc_decoder.struct.Shortening import Shortening
 
 
 class AWGNPassedDatagen:
@@ -32,12 +35,16 @@ class AWGNPassedDatagen:
             y_dtype=np.int64,
 
             gen_matrix: np.ndarray = None,
+
+            puncturing: Puncture = Puncture(0, 0),
+            shortening: Shortening = Shortening(0, 0),
+            allowed_llr_range: Clipping = Clipping(abs=20.0),
     ):
         self.N = N
         self.M = M
         self.K = N - M
         self.snr_db = snr_db
-        self.code_rate = 1.0 * (N - M) / (N - 2)
+        self.code_rate = 1.0 * self.K / (N - len(puncturing) - len(shortening))
         self.snr_lin = 10.0 ** (self.snr_db / 10.0)
         self.snr_sigma = np.sqrt(1.0 / (2.0 * self.snr_lin * self.code_rate))
 
@@ -48,6 +55,10 @@ class AWGNPassedDatagen:
         self.y_dtype = y_dtype
 
         self.gen_matrix = gen_matrix
+
+        self.puncturing = puncturing
+        self.shortening = shortening
+        self.allowed_llr_range = allowed_llr_range
 
     def __call__(self, *args, **kwargs):
         return self._gendata(*args, **kwargs)
@@ -89,6 +100,18 @@ class AWGNPassedDatagen:
 
             x_p_i = gen_x(word_length) * each_sf + -1 ** (1 - y_i)
             x_llr_i = 2 * x_p_i / (each_sf ** 2)
+
+            # Puncturing
+            if self.puncturing.start > 0:
+                if decoding_type == DecoderType.SP:
+                    x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = .001
+                else:
+                    x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = 0
+
+            # Shortening
+            if self.shortening.start > 0:
+                x_llr_i[0, self.shortening.start - 1:self.shortening.end] = self.allowed_llr_range.start
+
             if decoding_type == DecoderType.QMS:
                 x_llr_i = Functions.Cal_MSA_Q(x_llr_i, decoder_qms_qbit)
             x_llr_i = x_llr_i.astype(self.x_dtype)
