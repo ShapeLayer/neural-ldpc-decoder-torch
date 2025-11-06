@@ -60,10 +60,19 @@ class AWGNPassedDatagen:
         self.shortening = shortening
         self.allowed_llr_range = allowed_llr_range
 
-    def __call__(self, *args, **kwargs):
-        return self._gendata(*args, **kwargs)
+    def __call__(
+            self,
+            gentype: str="per_snr",
+            *args,
+            **kwargs
+        ):
+        if gentype == "per_snr":
+            return self._gendata_per_snr(*args, **kwargs)
+        elif gentype == "mix_snr":
+            return self._gendata_mixed(*args, **kwargs)
+        raise AttributeError("attribute `gentype` must be \"per_snr\" or \"mix_snr\".")
 
-    def _gendata(
+    def _gendata_per_snr(
             self,
             word_length: int,
             Z: int,

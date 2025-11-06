@@ -18,6 +18,7 @@ from boosted_neural_ldpc_decoder.struct.Shortening import Shortening
 
 class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
     def test_boosted_neural_ldpc_decoder(self):
+        # Configure torch device
         device = "cpu"
         if torch.cuda.is_available():
             device = "cuda"
@@ -26,11 +27,23 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         print(f"Using device: {device}")
         device = torch.device(device)
 
-        # Graph
+        # Load graph and generator matrix
+        """
+        A generator matrix is needed when generating a dataset where y is not all-zero.
+        If you don't need to use a non-all-zero dataset, genmatrix is not required.
+        But using a generator matrix is required to validate whether the model is going to overfit or not.
+        In my case, there is some wrong forward pass logic, and the model just overfitted
+        to translate all input into zero.
+        """
         basegraph = np.loadtxt("resources/basegraph2_set0.txt", int, delimiter="\t")
         genmatrix = np.loadtxt("resources/gen_matrix_bg2_z16.txt", int, delimiter=",")
         Z = 16
 
+        # Initialize connecting matrix
+        """
+        The connecting matrix would be generated when constructing the ConnectingMatrix object.
+        Because ConnectingMatrix depends on numpy, ConnectingMatrixTorch supports using numpy.
+        """
         conn = ConnectingMatrixTorch(
             ConnectingMatrix(
                 Z=Z,
@@ -98,6 +111,7 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         training_iter_start = fixed_iter
         training_iter_end = fixed_iter + iter_step
 
+        # Initialize data generator
         N, M = conn.N, conn.M
         datagen = AWGNPassedDatagen(
             N=N,
@@ -111,6 +125,7 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
             allowed_llr_range=allowed_llr_range,
         )
 
+        # Initialize Model
         fixed_iterative_nodes: list[int] = []
         model = BoostedNeuralLDPCDecoder(
             iter_node_counts=iter_node_counts,
@@ -138,7 +153,7 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
             init_vn_bias=1,
         ).to(device)
 
-        # Create loss function with multi-iteration weighting
+        # Initialize loss function with multi-iteration weighting
         criterion = LDPCDecoderLoss(
             loss_type=loss_type,
             etha=etha_start,
@@ -150,6 +165,8 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         
         optimizer = optim.Adam(model.get_trainable_parameters(), lr=learning_rate())
 
+        # Initializing Done
+        
         # Training loop
         training_batch_num = floor(train_word_length / batch_size)
         
@@ -158,8 +175,8 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
             
             if epoch > 0:  # Skip training on epoch 0 (just validation)
                 for batch_idx in range(training_batch_num):
-                    # Generate MIXED SNR batch (matches TensorFlow)
-                    x_i, y_i = datagen._gendata_mixed(
+                    x_i, y_i = datagen(
+                        gentype="mix_snr",
                         word_length=batch_size,
                         Z=Z,
                         is_y_all_zero=train_is_y_all_zero,
@@ -167,10 +184,7 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
                         decoder_qms_qbit=decoder_qms_qbit,
                     )
                     
-                    # Reshape for model input
                     x_i = np.reshape(x_i, [batch_size, N, Z])
-                    
-                    # Convert to tensors
                     x_i = torch.tensor(x_i, dtype=torch.float32, device=device)
                     y_i = torch.tensor(y_i, dtype=torch.float32, device=device)
                     
@@ -216,8 +230,8 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
                     total_frame_errors = 0
                     
                     for batch_idx in range(valid_batch_num):
-                        # Use mixed SNR for validation (consistent with training)
-                        x_i, y_i = datagen._gendata_mixed(
+                        x_i, y_i = datagen(
+                            gentype="mix_snr",
                             word_length=batch_size,
                             Z=Z,
                             is_y_all_zero=train_is_y_all_zero,
