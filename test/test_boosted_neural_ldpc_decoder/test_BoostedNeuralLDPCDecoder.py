@@ -5,7 +5,7 @@ import torch.optim as optim
 from datetime import datetime
 from math import floor
 
-from boosted_neural_ldpc_decoder import ConnectingMatrixTorch, ConnectingMatrix, AWGNPassedDatagen
+from boosted_neural_ldpc_decoder import ConnectingMatrixTorch, ConnectingMatrix, AWGNPassedDatagen, Functions
 from boosted_neural_ldpc_decoder.BoostedNeuralLDPCDecoder import BoostedNeuralLDPCDecoder
 from boosted_neural_ldpc_decoder.struct.Clipping import Clipping
 from boosted_neural_ldpc_decoder.struct.DecoderType import DecoderType
@@ -14,7 +14,8 @@ from boosted_neural_ldpc_decoder.struct.LearningRate import LearningRate
 from boosted_neural_ldpc_decoder.struct.NodeWeightSharingConfig import NodeWeightSharingConfig
 from boosted_neural_ldpc_decoder.struct.Puncture import Puncture
 from boosted_neural_ldpc_decoder.struct.Shortening import Shortening
-
+from checkpoint_utils import CheckPointUtil
+from checkpoint_utils import MetricsLogger
 
 class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
     def test_boosted_neural_ldpc_decoder(self):
@@ -105,7 +106,9 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         train_total_epochs = 200
 
         # Validating
-        validate_epoch_step = 1
+        validate_epoch_step = 5
+        checkpoint_step = 10
+        log_metrics_step = 1
 
         # Training iteration parameters
         training_iter_start = fixed_iter
@@ -164,6 +167,9 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         )
         
         optimizer = optim.Adam(model.get_trainable_parameters(), lr=learning_rate())
+
+        checkpoint_util = CheckPointUtil(checkpoint_dir="checkpoints")
+        metrics_logger = MetricsLogger(log_dir="checkpoints")
 
         # Initializing Done
         
@@ -228,6 +234,10 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
                     total_bit_errors = 0
                     total_frames = 0
                     total_frame_errors = 0
+                    last_iter_total_bits = 0
+                    last_iter_total_bit_errors = 0
+                    last_iter_total_frames = 0
+                    last_iter_total_frame_errors = 0
                     
                     for batch_idx in range(valid_batch_num):
                         x_i, y_i = datagen(
@@ -247,39 +257,87 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
                         loss = criterion(outputs, y_i)
                         valid_loss += loss.item()
                         
-                        # Calculate BER/FER on final iteration output
-                        final_output = outputs[-1]  # Last iteration output [batch, N*Z]
-                        
-                        # Hard decision: sign of LLR
-                        # Positive LLR → decoded bit = 0
-                        # Negative LLR → decoded bit = 1
-                        # So: decoded_bits = (LLR < 0).float()
-                        decoded_bits = (final_output < 0).float()
-                        
-                        # Compare with target
-                        bit_errors = (decoded_bits != y_i).float()
-                        
-                        # BER: bit error rate
-                        batch_bit_errors = bit_errors.sum().item()
-                        batch_bits = y_i.numel()
-                        total_bit_errors += batch_bit_errors
-                        total_bits += batch_bits
-                        
-                        # FER: frame error rate (any bit error in a frame)
-                        frame_errors = (bit_errors.sum(dim=1) > 0).float()
-                        batch_frame_errors = frame_errors.sum().item()
-                        batch_frames = y_i.shape[0]
-                        total_frame_errors += batch_frame_errors
-                        total_frames += batch_frames
+                        (bit_errors, bits), (frame_errors, frames) = Functions.evaluate_ber_fer(y_i, outputs)
+
+                        total_bit_errors += sum(bit_errors)
+                        total_bits += bits * len(bit_errors)
+                        total_frame_errors += sum(frame_errors)
+                        total_frames += frames * len(frame_errors)
+
+                        last_iter_total_bit_errors += bit_errors[-1]
+                        last_iter_total_bits += bits
+                        last_iter_total_frame_errors += frame_errors[-1]
+                        last_iter_total_frames += frames
                     
                     avg_valid_loss = valid_loss / valid_batch_num
                     ber = total_bit_errors / total_bits if total_bits > 0 else 0
                     fer = total_frame_errors / total_frames if total_frames > 0 else 0
+                    last_iter_ber = last_iter_total_bit_errors / last_iter_total_bits if last_iter_total_bits > 0 else 0
+                    last_iter_fer = last_iter_total_frame_errors / last_iter_total_frames if last_iter_total_frames > 0 else 0
                     
                     print(f">>> Validation Results (Epoch {epoch})")
                     print(f">>> Validation loss: {avg_valid_loss:.6f}")
-                    print(f">>> BER: {ber:.6e} ({total_bit_errors:.0f}/{total_bits})")
-                    print(f">>> FER: {fer:.6f} ({total_frame_errors:.0f}/{total_frames})\n")
+                    print(f">>> BER(entire iter): {ber:.6e} ({total_bit_errors:.0f}/{total_bits})")
+                    print(f">>> FER(entire_iter): {fer:.6f} ({total_frame_errors:.0f}/{total_frames})\n")
+                    print(f">>> BER(last iter): {last_iter_ber:.6e} ({last_iter_total_bit_errors:.0f}/{last_iter_total_bits})")
+                    print(f">>> FER(last iter): {last_iter_fer:.6f} ({last_iter_total_frame_errors:.0f}/{last_iter_total_frames})\n")
+            
+            
+            # During training/validation:
+            metrics = {
+                'loss': avg_valid_loss,
+                'ber_last_iter': last_iter_ber,
+                'fer_last_iter': last_iter_fer,
+            }
+            checkpoint_dumping_cfg = {"batch_size": batch_size, "lr": learning_rate.lr}
+            # Check point
+            if epoch % checkpoint_step == 0:
+                checkpoint_filename = f"checkpoint_epoch_{epoch:04d}.pth"
+                checkpoint_util.save(
+                    filepath=checkpoint_filename,
+                    model=model,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    metrics=metrics,
+                    config=checkpoint_dumping_cfg
+                )
+
+                checkpoint_util.save_weights(
+                    filepath=f"weights_epoch_{epoch:04d}",
+                    model=model,
+                    as_txt=True
+                )
+            
+            # Log metrics
+            if epoch % log_metrics_step == 0:
+                metrics_logger.log(
+                epoch=epoch,
+                metrics=metrics,
+                checkpoint_filename=checkpoint_filename,
+                config=checkpoint_dumping_cfg
+            )
+            
+            """
+            if metrics_logger.is_best(last_iter_ber):
+                checkpoint_util.save(
+                    filepath="best_model.pth",
+                    model=model,
+                    optimizer=optimizer,
+                    epoch=epoch,
+                    metrics=metrics
+                )
+                print("New best model saved!")
+            """
+        
+        """
+        checkpoint_data = checkpoint_util.load(
+            filepath="checkpoint_epoch_0050.pth",
+            model=model,
+            optimizer=optimizer,
+            device=device
+        )
+        print(f"Loaded epoch {checkpoint_data['epoch']}")
+        """
 
 if __name__ == '__main__':
     unittest.main()
