@@ -105,8 +105,8 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
             decay_rate=0,
             decay_steps=0,
         )
-        train_is_y_all_zero = True
-        train_total_epochs = 1000
+        train_is_y_all_zero = False
+        train_total_epochs = 20000
 
         model = BoostedNeuralLDPCDecoder(
             iter_node_counts=iter_node_counts,
