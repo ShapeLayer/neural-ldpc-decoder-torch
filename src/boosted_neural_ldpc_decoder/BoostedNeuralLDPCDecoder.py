@@ -258,7 +258,6 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                 else:
                     xa_input_weighted = xa_input
                 
-                # Apply quantization after weighting
                 if self.decoding_type == DecoderType.QMS:
                     xa_input_weighted = self._quantize_message(xa_input_weighted, self.decoder_qms_qbit)
             else:
@@ -272,25 +271,22 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                 else:
                     VN_APP = outputs[-1].reshape(batch_size, self.N, self.Z).transpose(1, 2)
                 
-                VN_APP = -VN_APP  # Note: APP>0 means decoded bit=0
+                VN_APP = -VN_APP
                 VN_APP_sign = torch.sign(VN_APP)
                 VN_APP_sign_edge = torch.matmul(VN_APP_sign, self.W_skipconn2even)
                 VN_APP_sign_edge = VN_APP_sign_edge.transpose(1, 2).reshape(batch_size, self.sum_edge * self.Z)
                 
-                # Apply lifting
                 CN_in_sign = torch.matmul(VN_APP_sign_edge, self.Lift_Matrix1.t())
                 CN_in_sign = CN_in_sign.reshape(batch_size, self.sum_edge, self.Z).transpose(1, 2)
                 
-                # Compute product for UCN detection
                 CN_in_sign_tile = CN_in_sign.unsqueeze(3).repeat(1, 1, 1, self.sum_edge)
                 CN_in_sign_tile = CN_in_sign_tile * self.W_even2odd_with_self.t().reshape(-1)
                 CN_in_sign_tile = CN_in_sign_tile.reshape(batch_size, self.Z, self.sum_edge, self.sum_edge)
                 CN_in_sign_tile = CN_in_sign_tile + 1.0 * (1 - (CN_in_sign_tile.abs() > 0).float())
                 
                 CN_sign_prod = torch.prod(CN_in_sign_tile, dim=3)
-                UCN_idx_edge = (CN_sign_prod < 0).float()  # [B, Z, sum_edge]
+                UCN_idx_edge = (CN_sign_prod < 0).float()
                 
-                # Apply inverse lifting
                 UCN_idx_edge = UCN_idx_edge.transpose(1, 2).reshape(batch_size, self.Z * self.sum_edge)
                 UCN_idx_edge = torch.matmul(UCN_idx_edge, self.Lift_Matrix2)
                 UCN_idx_edge = UCN_idx_edge.reshape(batch_size, self.sum_edge, self.Z).transpose(1, 2)
@@ -300,38 +296,30 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                 UCN_idx_edge = torch.zeros((batch_size, self.Z, self.sum_edge), device=self.conn_mat.device)
                 SCN_idx_edge = torch.ones((batch_size, self.Z, self.sum_edge), device=self.conn_mat.device)
 
-
             # Variable node update
             x0 = torch.matmul(xa_input_weighted, self.W_skipconn2even)
             x1 = torch.matmul(prev_llr, self.W_odd2even)
             x2 = x0 + x1
 
-            # in case of QMS
             if self.decoding_type == DecoderType.QMS:
                 x2 = torch.clamp(x2, self.allowed_llr_range.start, self.allowed_llr_range.end)
                 x2 = self._quantize_message(x2, self.decoder_qms_qbit)
             else:
                 x2 = torch.clamp(x2, self.allowed_llr_range.start, self.allowed_llr_range.end)
 
-            # transform using lifting_matrix
-            x2 = x2.transpose(1, 2)  # [batch, sum_edge, Z]
-            # x2 = x2.reshape(batch_size, self.neurons_per_odd_layer * self.Z)
+            # Transform using lifting_matrix
+            x2 = x2.transpose(1, 2)
             x2 = x2.reshape(batch_size, self.sum_edge * self.Z)
             x2 = torch.matmul(x2, self.conn_mat.lifting_matrix_1.t())
-            # x2 = x2.reshape(batch_size, self.neurons_per_odd_layer, self.Z)
             x2 = x2.reshape(batch_size, self.sum_edge, self.Z)
-
-            x2 = x2.transpose(1, 2)  # [batch, Z, neurons_per_odd_layer]
+            x2 = x2.transpose(1, 2)
 
             # Tile for check node computation
-            # x_tile = x2.repeat(1, 1, self.neurons_per_odd_layer)
             x_tile = x2.repeat(1, 1, self.sum_edge)
             W_input_reshape = self.W_even2odd.t().reshape(-1)
-            #   TODO: caching transpose option
 
             # Check node update
             x_tile_mul = x_tile * W_input_reshape
-            # x2_1 = x_tile_mul.reshape(batch_size, self.Z, self.neurons_per_odd_layer, self.neurons_per_odd_layer)
             x2_1 = x_tile_mul.reshape(batch_size, self.Z, self.sum_edge, self.sum_edge)
 
             if self.decoding_type == DecoderType.SP:
@@ -343,40 +331,39 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                 
                 epsilon = 1e-7
                 x3_clipped = torch.clamp(x3, -1 + epsilon, 1 - epsilon)
-                x_output_0 = -2.0 * torch.atanh(x3_clipped)  # 🔥 FIX: Add negative sign
+                x_output_0 = -2.0 * torch.atanh(x3_clipped)
             else:
-                # Min-sum operations
+                # Min-sum with proper masking for structural zeros
+                structural_zero_mask = (torch.abs(x2_1) < 1e-6).float()
+                
                 if self.decoding_type == DecoderType.MS or self.decoding_type == DecoderType.QMS:
-                    x2_1 = x2_1 + 0.0001 * (1 - (torch.abs(x2_1) > 0).float())
+                    x2_1 = x2_1 + 0.0001 * (1 - structural_zero_mask)
                 
-                # Compute absolute values, masking out zeros with large value
-                x2_abs = torch.abs(x2_1) + 10000 * (1 - (torch.abs(x2_1) > 0).float())
+                x2_abs = torch.abs(x2_1) + 10000.0 * structural_zero_mask
                 x3 = torch.min(x2_abs, dim=3)[0]
+                x3_real = torch.where(x3 > 9000, torch.tensor(0.0001, device=x3.device), x3)
                 
-                # Convert back: remove the 10000 offset for real values, keep epsilon for zeros
-                x3 = x3 + (-0.0001) * (1 - (torch.abs(x3) > 0.0001).float())
-                
-                # Compute sign product
+                # Sign product
                 x2_2 = -x2_1
                 x4 = torch.ones_like(x2_2) - 2 * (x2_2 < 0).float()
+                x4 = torch.where(structural_zero_mask > 0.5, torch.ones_like(x4), x4)
                 x4_prod = -torch.prod(x4, dim=3)
-                x_output_0 = x3 * torch.sign(x4_prod)
+                    
+                x_output_0 = x3_real * torch.sign(x4_prod)
             
-            x_output_0 = x_output_0.transpose(1, 2)  # [B, sum_edge, Z]
+            x_output_0 = x_output_0.transpose(1, 2)
             x_output_0 = x_output_0.reshape(batch_size, self.sum_edge * self.Z)
-            x_output_0 = torch.matmul(x_output_0, self.Lift_Matrix2)  # Apply permutation
+            x_output_0 = torch.matmul(x_output_0, self.Lift_Matrix2)
             x_output_0 = x_output_0.reshape(batch_size, self.sum_edge, self.Z)
-            x_output_0 = x_output_0.transpose(1, 2)  # [B, Z, sum_edge]
-
+            x_output_0 = x_output_0.transpose(1, 2)
 
             # Apply CN and UCN weights
             cn_weight = self.fetch_param(ParamType.Weight, NodeType.CN, curr_iter)
             ucn_weight = self.fetch_param(ParamType.Weight, NodeType.UCN, curr_iter)
 
-            # Process the absolute value for weight application
             x_output_abs = torch.abs(x_output_0)
+            x_output_sign = torch.sign(x_output_0)
 
-            # Apply appropriate weights based on configuration
             if cn_weight is not None:
                 if cn_weight.numel() == 1:
                     cn_weighted = x_output_abs * cn_weight
@@ -384,7 +371,6 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                     cn_weighted = x_output_abs * cn_weight.view(1, 1, -1)
                 elif cn_weight.numel() == self.M:
                     if self.node_weight_sharing_config.get(NodeType.CN) == 3:
-                        # Tile scalar to M length, then expand
                         expanded_weight = torch.matmul(
                             cn_weight.repeat(self.M).view(1, -1), 
                             self.W_skipconn2odd
@@ -414,29 +400,24 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                 else:
                     ucn_weighted = x_output_abs
 
-                # Apply UCN weights to unsatisfied check nodes
                 x_output_weighted = cn_weighted * SCN_idx_edge + ucn_weighted * UCN_idx_edge
             else:
                 x_output_weighted = cn_weighted
 
-            # ReLU and sign application
-            x_output_final = torch.relu(x_output_weighted)
-
-            # Clip and optionally quantize the output
-            x_output_final = torch.clamp(x_output_final, self.allowed_llr_range.start, self.allowed_llr_range.end)
+            x_output_weighted = torch.relu(x_output_weighted)
+            x_output_weighted = torch.clamp(x_output_weighted, 0, self.allowed_llr_range.end)
             if self.decoding_type == DecoderType.QMS:
-                x_output_final = self._quantize_message(x_output_final, self.decoder_qms_qbit)
+                x_output_weighted = self._quantize_message(x_output_weighted, self.decoder_qms_qbit)
             
-            # Apply sign back
-            next_llr = x_output_final * torch.sign(x_output_0)
-            prev_llr = next_llr  # Store for next iteration
+            next_llr = x_output_weighted * x_output_sign
+            next_llr = torch.clamp(next_llr, self.allowed_llr_range.start, self.allowed_llr_range.end)
+            
+            prev_llr = next_llr
 
-            # Generate output for this iteration
             y_output = torch.matmul(next_llr, self.W_output)
-            y_output = y_output.transpose(1, 2)  # [batch, N, Z]
+            y_output = y_output.transpose(1, 2)
             y_output = xa + y_output
-
-            # Apply clipping to final output
             y_output = torch.clamp(y_output, self.allowed_llr_range.start, self.allowed_llr_range.end)
             outputs.append(y_output.reshape(batch_size, self.N * self.Z))
+            
         return outputs
