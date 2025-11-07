@@ -26,5 +26,11 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = [
     "src/neural_ldpc_decoder",
-    "src/boosted_neural_ldpc_decoder"
+    "src/boosted_neural_ldpc_decoder",
+    "src/checkpoint_utils"
 ]
+
+[tool.rye.scripts]
+test_boosted_neural_ms = "python test/test_boosted_neural_ldpc_decoder/test_BoostedNeuralLDPCDecoder.py"
+test_neural_ms = "python test/test_neural_ldpc_decoder/test_NeuralLDPCDecoder.py"
+clear_checkpoint = "rm -rf checkpoints"

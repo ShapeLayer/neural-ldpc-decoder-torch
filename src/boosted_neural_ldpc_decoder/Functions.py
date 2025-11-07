@@ -74,11 +74,20 @@ class Functions:
         return q_value
 
     @staticmethod
-    def calc_ber_fer(pred: np.ndarray, y: np.ndarray):
-        # TODO
-        errors = np.sum(np.any(pred != y, axis=1))
-        total_bits = np.prod(y.shape)
-        total_frames = y.shape[0]
-        ber = np.sum(pred != y) / total_bits
-        fer = errors / total_frames
-        return ber, fer, errors
+    def evaluate_ber_fer(
+        expected: torch.Tensor,
+        actual: list[torch.Tensor]
+    ):
+        decoded_bits_per_iteration = [(each < 0).float() for each in actual]
+
+        # BER
+        bit_errors_per_iteration = [(each != expected).float() for each in decoded_bits_per_iteration]
+        batch_bit_errors_per_iteration = [each.sum().item() for each in bit_errors_per_iteration]
+        batch_bits = expected.numel()
+        
+        # FER
+        frame_errors_per_iteration = [(each.sum(dim=1) > 0).float() for each in bit_errors_per_iteration]
+        batch_frame_errors_per_iteration = [each.sum().item() for each in frame_errors_per_iteration]
+        batch_frames = expected.shape[0]
+
+        return (batch_bit_errors_per_iteration, batch_bits), (batch_frame_errors_per_iteration, batch_frames)

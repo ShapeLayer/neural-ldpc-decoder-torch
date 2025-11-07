@@ -5,7 +5,10 @@ from numpy import ndarray, dtype
 from numpy.random import RandomState
 
 from boosted_neural_ldpc_decoder.Functions import Functions
+from boosted_neural_ldpc_decoder.struct.Clipping import Clipping
 from boosted_neural_ldpc_decoder.struct.DecoderType import DecoderType
+from boosted_neural_ldpc_decoder.struct.Puncture import Puncture
+from boosted_neural_ldpc_decoder.struct.Shortening import Shortening
 
 
 class AWGNPassedDatagen:
@@ -32,12 +35,16 @@ class AWGNPassedDatagen:
             y_dtype=np.int64,
 
             gen_matrix: np.ndarray = None,
+
+            puncturing: Puncture = Puncture(0, 0),
+            shortening: Shortening = Shortening(0, 0),
+            allowed_llr_range: Clipping = Clipping(abs=20.0),
     ):
         self.N = N
         self.M = M
         self.K = N - M
         self.snr_db = snr_db
-        self.code_rate = 1.0 * (N - M) / (N - 2)
+        self.code_rate = 1.0 * self.K / (N - len(puncturing) - len(shortening))
         self.snr_lin = 10.0 ** (self.snr_db / 10.0)
         self.snr_sigma = np.sqrt(1.0 / (2.0 * self.snr_lin * self.code_rate))
 
@@ -49,10 +56,23 @@ class AWGNPassedDatagen:
 
         self.gen_matrix = gen_matrix
 
-    def __call__(self, *args, **kwargs):
-        return self._gendata(*args, **kwargs)
+        self.puncturing = puncturing
+        self.shortening = shortening
+        self.allowed_llr_range = allowed_llr_range
 
-    def _gendata(
+    def __call__(
+            self,
+            gentype: str="per_snr",
+            *args,
+            **kwargs
+        ):
+        if gentype == "per_snr":
+            return self._gendata_per_snr(*args, **kwargs)
+        elif gentype == "mix_snr":
+            return self._gendata_mixed(*args, **kwargs)
+        raise AttributeError("attribute `gentype` must be \"per_snr\" or \"mix_snr\".")
+
+    def _gendata_per_snr(
             self,
             word_length: int,
             Z: int,
@@ -60,21 +80,6 @@ class AWGNPassedDatagen:
             decoding_type: DecoderType = DecoderType.MS,
             decoder_qms_qbit: int = 5
     ) -> tuple[list[ndarray[tuple[Any, ...], dtype[Any]]], list[ndarray[tuple[Any, ...], dtype[Any]]]]:
-        """
-        Generates origin bits and AWGN-Passed LLR set for training or testing a neural network decoder.
-
-        :param word_length:
-        :param Z:
-        :param is_y_all_zero:
-        :param decoding_type:
-        :param decoder_qms_qbit:
-
-        If `decoding_type` is `DecoderType.QMS`, the generated values are quantized with `decoder_qms_qbit`.
-
-        IMPORTANT: This method NOT generates `word_length` size array.
-
-        :return: length len(snr_db) of array that contains (word_length, K * Z)-shape np.ndarray
-        """
         if word_length <= 0:
             raise ValueError("word_length must be positive integer")
 
@@ -87,8 +92,28 @@ class AWGNPassedDatagen:
         for each_sf in self.snr_sigma:
             y_i = gen_y(word_length, Z)
 
-            x_p_i = gen_x(word_length) * each_sf + -1 ** (1 - y_i)
+            # BPSK modulation: bit 0 → +1, bit 1 → -1
+            # transmitted = 1 - 2*y_i maps {0,1} to {+1,-1}
+            transmitted = 1 - 2 * y_i
+            
+            # Add AWGN noise: received = transmitted + noise
+            noise = gen_x(word_length) * each_sf
+            x_p_i = transmitted + noise
+            
+            # Compute LLR: positive LLR indicates bit=0
             x_llr_i = 2 * x_p_i / (each_sf ** 2)
+
+            # Puncturing
+            if self.puncturing.start > 0:
+                if decoding_type == DecoderType.SP:
+                    x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = .001
+                else:
+                    x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = 0
+
+            # Shortening
+            if self.shortening.start > 0:
+                x_llr_i[0, self.shortening.start - 1:self.shortening.end] = self.allowed_llr_range.start
+
             if decoding_type == DecoderType.QMS:
                 x_llr_i = Functions.Cal_MSA_Q(x_llr_i, decoder_qms_qbit)
             x_llr_i = x_llr_i.astype(self.x_dtype)
@@ -97,6 +122,64 @@ class AWGNPassedDatagen:
             y.append(y_i)
 
         return x, y
+
+    def _gendata_mixed(
+            self,
+            word_length: int,
+            Z: int,
+            is_y_all_zero: bool = True,
+            decoding_type: DecoderType = DecoderType.MS,
+            decoder_qms_qbit: int = 5
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if word_length <= 0:
+            raise ValueError("word_length must be positive integer")
+
+        x_mixed = []
+        y_mixed = []
+
+        gen_x = self._gen_x
+        gen_y = self._gen_y_all_zero if is_y_all_zero else self._gen_y_wordgen
+
+        curr_batch_size = 0
+        snr_idx = 0
+        
+        while curr_batch_size < word_length:
+            each_sf = self.snr_sigma[snr_idx % len(self.snr_sigma)]
+            
+            # Generate 1 sample at this SNR
+            y_i = gen_y(1, Z)
+            
+            # BPSK modulation: bit 0 → +1, bit 1 → -1
+            transmitted = 1 - 2 * y_i
+            
+            # Add AWGN noise
+            noise = gen_x(1) * each_sf
+            x_p_i = transmitted + noise
+            
+            # Compute LLR
+            x_llr_i = 2 * x_p_i / (each_sf ** 2)
+
+            # Puncturing
+            if self.puncturing.start > 0:
+                if decoding_type == DecoderType.SP:
+                    x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = .001
+                else:
+                    x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = 0
+
+            # Shortening
+            if self.shortening.start > 0:
+                x_llr_i[0, self.shortening.start - 1:self.shortening.end] = self.allowed_llr_range.start
+
+            if decoding_type == DecoderType.QMS:
+                x_llr_i = Functions.Cal_MSA_Q(x_llr_i, decoder_qms_qbit)
+            
+            x_mixed.append(x_llr_i.astype(self.x_dtype))
+            y_mixed.append(y_i.astype(self.y_dtype))
+            
+            snr_idx += 1
+            curr_batch_size += 1
+
+        return np.concatenate(x_mixed, axis=0), np.concatenate(y_mixed, axis=0)
 
     def _gen_x(self, word_length: int) -> np.ndarray:
         return self._awgn_noise_random.normal(0., 1., size=(word_length, self.gen_matrix.shape[1])).astype(self.x_dtype)
