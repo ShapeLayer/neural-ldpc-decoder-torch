@@ -26,7 +26,8 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = [
     "src/neural_ldpc_decoder",
-    "src/boosted_neural_ldpc_decoder"
+    "src/boosted_neural_ldpc_decoder",
+    "src/checkpoint_utils"
 ]
 
 [tool.rye.scripts]

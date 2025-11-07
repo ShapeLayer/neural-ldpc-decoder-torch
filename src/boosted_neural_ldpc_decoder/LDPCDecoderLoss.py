@@ -72,34 +72,22 @@ class LDPCDecoderLoss(nn.Module):
             # Compute iteration weight: etha^(training_iter_end - 1 - t)
             iter_weight = self.etha ** (self.training_iter_end - 1 - t)
             
-            # Compute loss for this iteration
             if self.loss_type == 0:  # BCE with logits
-                # TF: sigmoid_cross_entropy_with_logits(labels=ya, logits=x_temp)
-                # PyTorch BCE expects: positive logit = class 1
-                # Our LLR: positive = bit 0, negative = bit 1
-                # So we DON'T negate here because TF also uses raw logits
                 iter_loss = nn.functional.binary_cross_entropy_with_logits(
                     -x_temp,
                     targets,
-                    reduction='none'  # Keep per-sample loss for weighting
-                )
-                
+                    reduction='none'
+                )    
             elif self.loss_type == 1:  # Soft BER (all-zero codeword only)
-                # TF: tf.math.sigmoid(x_temp)
-                # For all-zero: positive LLR (wrong prediction) should have high loss
                 iter_loss = torch.sigmoid(x_temp)
-                
             elif self.loss_type == 2:  # FER (all-zero codeword only)
-                # TF: x_temp = 1/2*(1-sign_through(tf.reduce_min(-x_temp, axis=1)))
                 min_llr = torch.min(-x_temp, dim=1)[0]  # [batch]
                 
-                # sign_through with straight-through estimator
                 sign_val = torch.sign(min_llr)
                 approx = self._inv_exp(min_llr)
                 sign_through = approx + (sign_val - approx).detach()
                 
                 iter_loss = 0.5 * (1.0 - sign_through)  # [batch]
-                
             else:
                 raise ValueError(f"Unsupported loss_type: {self.loss_type}")
             

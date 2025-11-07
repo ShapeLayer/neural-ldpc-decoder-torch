@@ -75,8 +75,8 @@ class Functions:
 
     @staticmethod
     def evaluate_ber_fer(
-        expected: torch.tensor,
-        actual: list[torch.tensor]
+        expected: torch.Tensor,
+        actual: list[torch.Tensor]
     ):
         decoded_bits_per_iteration = [(each < 0).float() for each in actual]
 

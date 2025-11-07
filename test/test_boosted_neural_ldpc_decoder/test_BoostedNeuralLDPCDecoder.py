@@ -96,7 +96,7 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
 
         # Training
         loss_type = 0  # 0: BCE (works for zero and non-zero), 1: Soft BER (zero only), 2: FER (zero only)
-        etha_start = 1.0  # Exponential weighting: 0=last iter only, 1.0=equal weight, >1=favor early iters
+        etha_init = 1.0  # Exponential weighting: 0=last iter only, 1.0=equal weight, >1=favor early iters
         learning_rate = LearningRate(
             initial_lr=.001,
             decay_rate=0,
@@ -106,9 +106,10 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         train_total_epochs = 200
 
         # Validating
+        # Setting checkpoint_step and log_metrics_step into multiple of validate_epoch step is recommended.
         validate_epoch_step = 5
-        checkpoint_step = 10
-        log_metrics_step = 1
+        checkpoint_step = validate_epoch_step * 2
+        log_metrics_step = validate_epoch_step
 
         # Training iteration parameters
         training_iter_start = fixed_iter
@@ -159,7 +160,7 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
         # Initialize loss function with multi-iteration weighting
         criterion = LDPCDecoderLoss(
             loss_type=loss_type,
-            etha=etha_start,
+            etha=etha_init,
             training_iter_start=training_iter_start,
             training_iter_end=training_iter_end,
             fixed_init=fixed_init,
@@ -173,9 +174,15 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
 
         # Initializing Done
         
-        # Training loop
+        # Training
         training_batch_num = floor(train_word_length / batch_size)
+
+        # Metrics: define variables that used when validating previously
+        avg_valid_loss = 0
+        last_iter_ber = 0
+        last_iter_fer = 0
         
+        # Training Loop
         for epoch in range(train_total_epochs + 1):
             epoch_loss = 0.0
             
@@ -278,12 +285,15 @@ class test_BoostedNeuralLDPCDecoder(unittest.TestCase):
                     print(f">>> Validation Results (Epoch {epoch})")
                     print(f">>> Validation loss: {avg_valid_loss:.6f}")
                     print(f">>> BER(entire iter): {ber:.6e} ({total_bit_errors:.0f}/{total_bits})")
-                    print(f">>> FER(entire_iter): {fer:.6f} ({total_frame_errors:.0f}/{total_frames})\n")
+                    print(f">>> FER(entire iter): {fer:.6f} ({total_frame_errors:.0f}/{total_frames})")
                     print(f">>> BER(last iter): {last_iter_ber:.6e} ({last_iter_total_bit_errors:.0f}/{last_iter_total_bits})")
-                    print(f">>> FER(last iter): {last_iter_fer:.6f} ({last_iter_total_frame_errors:.0f}/{last_iter_total_frames})\n")
-            
-            
+                    print(f">>> FER(last iter): {last_iter_fer:.6f} ({last_iter_total_frame_errors:.0f}/{last_iter_total_frames})")
+                    print()
+
             # During training/validation:
+            # metrics are defined before the loop entry
+            # but if validation is not executed in these loop,
+            # metrics dictionary refers legacy metrics
             metrics = {
                 'loss': avg_valid_loss,
                 'ber_last_iter': last_iter_ber,
