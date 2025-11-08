@@ -23,6 +23,7 @@ def print_train_progress(
         current_epoch,
         total_epochs,
         loss=None,
+        start_time=None,
         bar_length=40
     ):
     percent = current_epoch / total_epochs
@@ -34,6 +35,31 @@ def print_train_progress(
     
     if loss is not None:
         progress_str += f' Loss: {loss:.6f}'
+    
+    # Calculate ETA
+    if start_time is not None and current_batch > 0:
+        elapsed = datetime.now().timestamp() - start_time
+        batches_done = (current_epoch - 1) * total_batches + current_batch
+        total_batches_needed = total_epochs * total_batches
+        
+        if batches_done > 0:
+            avg_time_per_batch = elapsed / batches_done
+            remaining_batches = total_batches_needed - batches_done
+            eta_seconds = remaining_batches * avg_time_per_batch
+            
+            # Format ETA
+            hours = int(eta_seconds // 3600)
+            minutes = int((eta_seconds % 3600) // 60)
+            seconds = int(eta_seconds % 60)
+            
+            if hours > 0:
+                eta_str = f"{hours}h {minutes}m"
+            elif minutes > 0:
+                eta_str = f"{minutes}m {seconds}s"
+            else:
+                eta_str = f"{seconds}s"
+            
+            progress_str += f' ETA: {eta_str}'
     
     stdout.write('\r' + progress_str)
     stdout.flush()
@@ -216,6 +242,8 @@ def train_boosted_neural_ldpc_decoder():
     last_iter_fer = 0
     
     # Training Loop
+    training_start_time = datetime.now().timestamp()
+    
     for epoch in range(train_total_epochs + 1):
         epoch_loss = 0.0
         
@@ -254,10 +282,13 @@ def train_boosted_neural_ldpc_decoder():
                         total_batches=training_batch_num,
                         current_epoch=epoch,
                         total_epochs=train_total_epochs,
-                        loss=loss.item()
+                        loss=loss.item(),
+                        start_time=training_start_time
                     )
             
             avg_epoch_loss = epoch_loss / training_batch_num
+            stdout.write('\n')
+            stdout.flush()
             print(f"{'=' * 60}")
             print(f"Epoch {epoch}/{train_total_epochs} Complete")
             print(f"Training iter range: [{training_iter_start}, {training_iter_end})")
@@ -317,7 +348,9 @@ def train_boosted_neural_ldpc_decoder():
                 fer = total_frame_errors / total_frames if total_frames > 0 else 0
                 last_iter_ber = last_iter_total_bit_errors / last_iter_total_bits if last_iter_total_bits > 0 else 0
                 last_iter_fer = last_iter_total_frame_errors / last_iter_total_frames if last_iter_total_frames > 0 else 0
-                
+
+                stdout.write('\n')
+                stdout.flush()
                 print(f">>> Validation Results (Epoch {epoch})")
                 print(f">>> Validation loss: {avg_valid_loss:.6f}")
                 print(f">>> BER(entire iter): {ber:.6e} ({total_bit_errors:.0f}/{total_bits})")
