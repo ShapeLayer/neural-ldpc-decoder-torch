@@ -139,19 +139,26 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                 setattr(self, weight_name, param)
 
     def _apply_constraints(self):
+        """Apply constraints to weights and biases (if they exist)."""
         for node_type, sharing_type in self.node_weight_sharing_config:
-            if sharing_type == 0: continue
+            if sharing_type == 0:
+                continue
+                
             iterations_to_create = None
-            if sharing_type in [1, 2, 3]:  # Independent weights per iteration
+            if sharing_type in [1, 2, 3]:
                 iterations_to_create = [i for i in range(self.iter_node_counts)]
             else:
                 iterations_to_create = [self.iter_node_counts]
+                
             for iteration in iterations_to_create:
                 for param_type in [ParamType.Weight, ParamType.Bias]:
                     param_name = self._param_name(param_type, node_type, iteration)
+                    if not hasattr(self, param_name):
+                        continue
                     param = getattr(self, param_name)
                     if param is None:
                         continue
+                        
                     if param_type == ParamType.Weight:
                         param.data.clamp_(self.allowed_weight_range.start, self.allowed_weight_range.end)
                     elif param_type == ParamType.Bias:
@@ -247,8 +254,8 @@ class BoostedNeuralLDPCDecoder(nn.Module):
 
         outputs = []
 
+        # Check TF code: xa_input is multiplied by VN weight before VN operations
         for curr_iter in range(self.iter_node_counts):
-            # Apply VN weights to input first (before UCN computation)
             vn_weight = self.fetch_param(ParamType.Weight, NodeType.VN, curr_iter)
             if vn_weight is not None:
                 if vn_weight.numel() == 1:
@@ -257,22 +264,27 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                     xa_input_weighted = xa_input * vn_weight.view(1, 1, -1)
                 else:
                     xa_input_weighted = xa_input
-                
-                if self.decoding_type == DecoderType.QMS:
-                    xa_input_weighted = self._quantize_message(xa_input_weighted, self.decoder_qms_qbit)
             else:
                 xa_input_weighted = xa_input
-                if self.decoding_type == DecoderType.QMS:
-                    xa_input_weighted = self._quantize_message(xa_input_weighted, self.decoder_qms_qbit)
 
+            # Apply quantization once
+            if self.decoding_type == DecoderType.QMS:
+                xa_input_qms = self._quantize_message(xa_input_weighted, self.decoder_qms_qbit)
+            else:
+                xa_input_qms = xa_input_weighted
+
+            # UCN calculation uses APP from PREVIOUS DECODER OUTPUT
             if self.node_weight_sharing_config.get(NodeType.UCN) > 0:
                 if curr_iter == 0:
-                    VN_APP = xa_input_weighted
+                    VN_APP = xa_input_qms
                 else:
                     VN_APP = outputs[-1].reshape(batch_size, self.N, self.Z).transpose(1, 2)
-                
-                VN_APP = -VN_APP
-                VN_APP_sign = torch.sign(VN_APP)
+                    if self.decoding_type == DecoderType.QMS:
+                        VN_APP = self._quantize_message(VN_APP, self.decoder_qms_qbit)
+
+                VN_APP_sign = torch.sign(-VN_APP)
+                VN_APP_sign = torch.where(VN_APP_sign == 0, torch.ones_like(VN_APP_sign), VN_APP_sign)
+
                 VN_APP_sign_edge = torch.matmul(VN_APP_sign, self.W_skipconn2even)
                 VN_APP_sign_edge = VN_APP_sign_edge.transpose(1, 2).reshape(batch_size, self.sum_edge * self.Z)
                 
@@ -296,8 +308,7 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                 UCN_idx_edge = torch.zeros((batch_size, self.Z, self.sum_edge), device=self.conn_mat.device)
                 SCN_idx_edge = torch.ones((batch_size, self.Z, self.sum_edge), device=self.conn_mat.device)
 
-            # Variable node update
-            x0 = torch.matmul(xa_input_weighted, self.W_skipconn2even)
+            x0 = torch.matmul(xa_input_qms, self.W_skipconn2even)
             x1 = torch.matmul(prev_llr, self.W_odd2even)
             x2 = x0 + x1
 
@@ -333,23 +344,30 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                 x3_clipped = torch.clamp(x3, -1 + epsilon, 1 - epsilon)
                 x_output_0 = -2.0 * torch.atanh(x3_clipped)
             else:
-                # Min-sum with proper masking for structural zeros
+                # Calculate structural zero mask BEFORE epsilon addition
                 structural_zero_mask = (torch.abs(x2_1) < 1e-6).float()
                 
+                # Add epsilon to avoid zero-min issues (for MS/QMS)
                 if self.decoding_type == DecoderType.MS or self.decoding_type == DecoderType.QMS:
-                    x2_1 = x2_1 + 0.0001 * (1 - structural_zero_mask)
+                    x2_1 = x2_1 + 0.0001 * (1 - (torch.abs(x2_1) > 0).float())
+
+                # Apply structural zero mask to absolute values
+                x2_abs = torch.abs(x2_1)
+                x2_abs = x2_abs + 10000.0 * structural_zero_mask
                 
-                x2_abs = torch.abs(x2_1) + 10000.0 * structural_zero_mask
+                # Find minimum
                 x3 = torch.min(x2_abs, dim=3)[0]
-                x3_real = torch.where(x3 > 9000, torch.tensor(0.0001, device=x3.device), x3)
                 
-                # Sign product
+                # Restore small epsilon value if result was epsilon
+                x3 = x3 - 0.0001 * (1 - (torch.abs(x3) > 0.0001).float())
+
+                # Sign product (structural zeros contribute +1 to sign)
                 x2_2 = -x2_1
-                x4 = torch.ones_like(x2_2) - 2 * (x2_2 < 0).float()
-                x4 = torch.where(structural_zero_mask > 0.5, torch.ones_like(x4), x4)
+                x4 = 1.0 - 2.0 * (x2_2 < 0).float()
+                x4 = x4 + structural_zero_mask * (1.0 - x4)
                 x4_prod = -torch.prod(x4, dim=3)
-                    
-                x_output_0 = x3_real * torch.sign(x4_prod)
+                
+                x_output_0 = x3 * torch.sign(x4_prod)
             
             x_output_0 = x_output_0.transpose(1, 2)
             x_output_0 = x_output_0.reshape(batch_size, self.sum_edge * self.Z)
@@ -357,61 +375,52 @@ class BoostedNeuralLDPCDecoder(nn.Module):
             x_output_0 = x_output_0.reshape(batch_size, self.sum_edge, self.Z)
             x_output_0 = x_output_0.transpose(1, 2)
 
-            # Apply CN and UCN weights
-            cn_weight = self.fetch_param(ParamType.Weight, NodeType.CN, curr_iter)
-            ucn_weight = self.fetch_param(ParamType.Weight, NodeType.UCN, curr_iter)
-
             x_output_abs = torch.abs(x_output_0)
-            x_output_sign = torch.sign(x_output_0)
 
+            # Fetch and apply CN weight
+            cn_weight = self.fetch_param(ParamType.Weight, NodeType.CN, curr_iter)
             if cn_weight is not None:
                 if cn_weight.numel() == 1:
-                    cn_weighted = x_output_abs * cn_weight
+                    weighted_abs = x_output_abs * cn_weight
                 elif cn_weight.numel() == self.sum_edge:
-                    cn_weighted = x_output_abs * cn_weight.view(1, 1, -1)
+                    weighted_abs = x_output_abs * cn_weight.view(1, 1, -1)
                 elif cn_weight.numel() == self.M:
-                    if self.node_weight_sharing_config.get(NodeType.CN) == 3:
-                        expanded_weight = torch.matmul(
-                            cn_weight.repeat(self.M).view(1, -1), 
-                            self.W_skipconn2odd
-                        )
-                    else:
-                        expanded_weight = torch.matmul(cn_weight.view(1, -1), self.W_skipconn2odd)
-                    cn_weighted = x_output_abs * expanded_weight.view(1, 1, -1)
+                    expanded_weight = torch.matmul(cn_weight.view(1, -1), self.W_skipconn2odd)
+                    weighted_abs = x_output_abs * expanded_weight.view(1, 1, -1)
                 else:
-                    cn_weighted = x_output_abs
+                    weighted_abs = x_output_abs
             else:
-                cn_weighted = x_output_abs
+                weighted_abs = x_output_abs
 
+            # Apply UCN weight if configured
+            ucn_weight = self.fetch_param(ParamType.Weight, NodeType.UCN, curr_iter)
             if ucn_weight is not None:
-                if ucn_weight.numel() == 1:
-                    ucn_weighted = x_output_abs * ucn_weight
-                elif ucn_weight.numel() == self.sum_edge:
+                if ucn_weight.numel() == self.sum_edge:
                     ucn_weighted = x_output_abs * ucn_weight.view(1, 1, -1)
                 elif ucn_weight.numel() == self.M:
-                    if self.node_weight_sharing_config.get(NodeType.UCN) == 3:
-                        expanded_weight = torch.matmul(
-                            ucn_weight.repeat(self.M).view(1, -1),
-                            self.W_skipconn2odd
-                        )
-                    else:
-                        expanded_weight = torch.matmul(ucn_weight.view(1, -1), self.W_skipconn2odd)
+                    expanded_weight = torch.matmul(ucn_weight.view(1, -1), self.W_skipconn2odd)
                     ucn_weighted = x_output_abs * expanded_weight.view(1, 1, -1)
                 else:
-                    ucn_weighted = x_output_abs
+                    ucn_weighted = weighted_abs
 
-                x_output_weighted = cn_weighted * SCN_idx_edge + ucn_weighted * UCN_idx_edge
-            else:
-                x_output_weighted = cn_weighted
+                # Combine CN and UCN weights based on satisfied/unsatisfied checks
+                weighted_abs = weighted_abs * SCN_idx_edge + ucn_weighted * UCN_idx_edge
 
-            x_output_weighted = torch.relu(x_output_weighted)
-            x_output_weighted = torch.clamp(x_output_weighted, 0, self.allowed_llr_range.end)
+            # Apply ReLU and clipping BEFORE sign multiplication
+            weighted_abs = torch.relu(weighted_abs)
+            weighted_abs = torch.clamp(weighted_abs, 0, self.allowed_llr_range.end)
+            
+            # Apply quantization if needed
             if self.decoding_type == DecoderType.QMS:
-                x_output_weighted = self._quantize_message(x_output_weighted, self.decoder_qms_qbit)
+                weighted_abs = self._quantize_message(weighted_abs, self.decoder_qms_qbit)
             
-            next_llr = x_output_weighted * x_output_sign
+            # Apply sign LAST (after all processing)
+            x_output_sign = torch.sign(x_output_0)
+            next_llr = weighted_abs * x_output_sign
+            
+            # Final clipping
             next_llr = torch.clamp(next_llr, self.allowed_llr_range.start, self.allowed_llr_range.end)
-            
+
             prev_llr = next_llr
 
             y_output = torch.matmul(next_llr, self.W_output)

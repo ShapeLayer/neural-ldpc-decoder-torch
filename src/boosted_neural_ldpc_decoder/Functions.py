@@ -41,21 +41,30 @@ class Functions:
 
     @staticmethod
     def cal_msa_q_torch(x: torch.Tensor, q_bit: int) -> torch.Tensor:
-        def _quantize_for_qms(x: torch.Tensor, q_bit: int) -> torch.Tensor:
-            if q_bit == 6:
-                return torch.clamp(torch.round(x), -15.5, 15.5)
-            if q_bit == 5:
-                return torch.clamp(torch.round(x * 2.0) / 2.0, -7.5, 7.5)
-            if q_bit == -5:
-                return torch.clamp(torch.round(x), -15.0, 15.0)
-            if q_bit == 4:
-                return torch.clamp(torch.round(x), -7.0, 7.0)
-            if q_bit == 3:
-                return torch.clamp(torch.round(x / 2.0) * 2.0, -6.0, 6.0)
+        """
+        Quantize message with straight-through estimator
+        Forward: quantized value
+        Backward: gradient = 1 (pass through)
+        """
+        if q_bit == 6:
+            q_value = torch.clamp(torch.round(x), -15.5, 15.5)
+            clip_value = torch.clamp(x, -15.5, 15.5)
+        elif q_bit == 5:
+            q_value = torch.clamp(torch.round(x * 2.0) / 2.0, -7.5, 7.5)
+            clip_value = torch.clamp(x, -7.5, 7.5)
+        elif q_bit == -5:
+            q_value = torch.clamp(torch.round(x), -15, 15)
+            clip_value = torch.clamp(x, -15, 15)
+        elif q_bit == 4:
+            q_value = torch.clamp(torch.round(x), -7, 7)
+            clip_value = torch.clamp(x, -7, 7)
+        elif q_bit == 3:
+            q_value = torch.clamp(torch.round(x / 2) * 2, -6, 6)
+            clip_value = torch.clamp(x, -6, 6)
+        else:
             return x
-        clipped = Functions.qms_clipping_torch(x, q_bit)
-        q_value = _quantize_for_qms(x, q_bit)
-        return clipped + (q_value - clipped).detach()
+
+        return clip_value + (q_value - clip_value).detach()
 
     @staticmethod
     def Cal_MSA_Q(x, q_bit):
