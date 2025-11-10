@@ -141,8 +141,8 @@ def train_boosted_neural_ldpc_decoder():
 
     # Model
     batch_size = 20
-    train_word_length = 10000
-    validate_word_length = 1000
+    train_word_input_length = 10000
+    validate_word_input_length = 1000
 
     # Training
     loss_type = 0  # 0: BCE (works for zero and non-zero), 1: Soft BER (zero only), 2: FER (zero only)
@@ -167,8 +167,6 @@ def train_boosted_neural_ldpc_decoder():
     checkpoint_step = validate_epoch_step * 2
     log_metrics_step = validate_epoch_step
     train_progress_inform_step = 10
-
-    validate_input_length = 1000
 
     # Training iteration parameters
     training_iter_start = fixed_iter
@@ -235,7 +233,7 @@ def train_boosted_neural_ldpc_decoder():
     # Initializing Done
     
     # Training
-    training_batch_size = floor(train_word_length / batch_size)
+    training_batch_size = floor(train_word_input_length / batch_size)
 
     # Metrics: define variables that used when validating previously
     avg_valid_loss = 0
@@ -248,11 +246,12 @@ def train_boosted_neural_ldpc_decoder():
     for epoch in range(train_total_epochs + 1):
         epoch_loss = 0.0
 
-        current_lr = learning_rate()
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = current_lr
-        
+        current_lr = learning_rate.initial_lr
         if epoch > 0:
+            current_lr = learning_rate()
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = current_lr
+
             for batch_idx in range(training_batch_size):
                 x_i, y_i = datagen(
                     gentype="mix_snr",
@@ -293,6 +292,15 @@ def train_boosted_neural_ldpc_decoder():
                         start_time=training_start_time
                     )
             
+            print_train_progress(
+                current_batch=batch_idx + 1,
+                total_batches=training_batch_size,
+                current_epoch=epoch,
+                total_epochs=train_total_epochs,
+                loss=loss.item(),
+                start_time=training_start_time
+            )
+
             avg_epoch_loss = epoch_loss / training_batch_size
             stdout.write('\n')
             stdout.flush()
@@ -305,16 +313,9 @@ def train_boosted_neural_ldpc_decoder():
         # Validation
         if epoch % validate_epoch_step == 0:
             model.eval()
-
-            total_norm = 0.0
-            for p in model.parameters():
-                if p.grad is not None:
-                    param_norm = p.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-            total_norm = total_norm ** 0.5
             
             with torch.no_grad():
-                valid_batch_size = floor(validate_word_length / batch_size)
+                valid_batch_size = floor(validate_word_input_length / batch_size)
                 valid_loss = 0.0
                 
                 # BER/FER tracking
@@ -376,7 +377,6 @@ def train_boosted_neural_ldpc_decoder():
                 stdout.write('\n')
                 stdout.flush()
                 print(f">>> Validation Results (Epoch {epoch})")
-                print(f">>> Gradient norm: {total_norm:.6f}")
                 print(f">>> Learning rate: {current_lr:.6e}")
                 print(f">>> Validation loss: {avg_valid_loss:.6f}")
                 print(f">>> BER(entire iter): {ber:.6e} ({total_bit_errors:.0f}/{total_bits})")

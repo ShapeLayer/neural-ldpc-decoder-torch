@@ -50,7 +50,7 @@ class Functions:
             q_value = torch.clamp(torch.round(x), -15.5, 15.5)
             clip_value = torch.clamp(x, -15.5, 15.5)
         elif q_bit == 5:
-            q_value = torch.clamp(torch.round(x * 2) / 2, -7.5, 7.5)
+            q_value = torch.clamp(torch.round(x * 2.0) / 2.0, -7.5, 7.5)
             clip_value = torch.clamp(x, -7.5, 7.5)
         elif q_bit == -5:
             q_value = torch.clamp(torch.round(x), -15, 15)
