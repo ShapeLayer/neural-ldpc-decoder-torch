@@ -292,14 +292,15 @@ def train_boosted_neural_ldpc_decoder():
                         start_time=training_start_time
                     )
             
-            print_train_progress(
-                current_batch=batch_idx + 1,
-                total_batches=training_batch_size,
-                current_epoch=epoch,
-                total_epochs=train_total_epochs,
-                loss=loss.item(),
-                start_time=training_start_time
-            )
+            if training_batch_size > 0:
+                print_train_progress(
+                    current_batch=batch_idx + 1,
+                    total_batches=training_batch_size,
+                    current_epoch=epoch,
+                    total_epochs=train_total_epochs,
+                    loss=loss.item(),
+                    start_time=training_start_time
+                )
 
             avg_epoch_loss = epoch_loss / training_batch_size
             stdout.write('\n')
