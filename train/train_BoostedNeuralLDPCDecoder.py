@@ -246,7 +246,7 @@ def train_boosted_neural_ldpc_decoder():
     for epoch in range(train_total_epochs + 1):
         epoch_loss = 0.0
 
-        current_lr = learning_rate.initial_lr
+        current_lr = learning_rate.lr
         if epoch > 0:
             current_lr = learning_rate()
             for param_group in optimizer.param_groups:
