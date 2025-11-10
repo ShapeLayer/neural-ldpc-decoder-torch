@@ -18,6 +18,7 @@ class LDPCDecoderLoss(nn.Module):
             training_iter_end: int = 1,
             fixed_init: int = 0,
             fixed_iter: int = 0,
+            frame_penalty_weight: float = 0.5,
     ):
         """
         Initialize loss function
@@ -32,6 +33,7 @@ class LDPCDecoderLoss(nn.Module):
             training_iter_end: End iteration for training
             fixed_init: Fixed initialization iterations (Delta_2)
             fixed_iter: Fixed iterations before training starts
+            frame_penalty_weight: Weight for frame error penalty in loss
         """
         super(LDPCDecoderLoss, self).__init__()
         self.loss_type = loss_type
@@ -40,6 +42,7 @@ class LDPCDecoderLoss(nn.Module):
         self.training_iter_end = training_iter_end
         self.fixed_init = fixed_init
         self.fixed_iter = fixed_iter
+        self.frame_penalty_weight = frame_penalty_weight
 
     def forward(self, outputs: list, targets: torch.Tensor) -> torch.Tensor:
         """
@@ -55,7 +58,7 @@ class LDPCDecoderLoss(nn.Module):
         if not isinstance(outputs, list):
             raise ValueError("outputs must be a list of tensors from each iteration")
         
-        # Determine iteration range: from training_iter_end-1 down to max(training_iter_start-fixed_init, fixed_iter)
+        # Determine iteration range
         start_t = self.training_iter_end - 1
         end_t = max(self.training_iter_start - self.fixed_init, self.fixed_iter) - 1
         
@@ -69,18 +72,30 @@ class LDPCDecoderLoss(nn.Module):
                 
             x_temp = outputs[t]  # [batch, N*Z]
             
-            # Compute iteration weight: etha^(training_iter_end - 1 - t)
+            # Compute iteration weight
             iter_weight = self.etha ** (self.training_iter_end - 1 - t)
             
             if self.loss_type == 0:  # BCE with logits
-                iter_loss = nn.functional.binary_cross_entropy_with_logits(
+                # Compute bit-level BCE loss
+                bit_loss = nn.functional.binary_cross_entropy_with_logits(
                     -x_temp,
                     targets,
                     reduction='none'
-                )    
-            elif self.loss_type == 1:  # Soft BER (all-zero codeword only)
-                iter_loss = torch.sigmoid(x_temp)
-            elif self.loss_type == 2:  # FER (all-zero codeword only)
+                )  # [batch, N*Z]
+                
+                # Compute frame-level loss
+                frame_loss = torch.mean(bit_loss, dim=1)  # [batch]
+                
+                # Check if frame has errors
+                hard_decisions = (x_temp < 0).float()
+                frame_errors = torch.any(hard_decisions != targets, dim=1).float()  # [batch]
+                
+                iter_loss = frame_loss + self.frame_penalty_weight * frame_errors
+                
+            elif self.loss_type == 1:  # Soft BER
+                iter_loss = torch.mean(torch.sigmoid(x_temp), dim=1)  # [batch]
+                
+            elif self.loss_type == 2:  # FER
                 min_llr = torch.min(-x_temp, dim=1)[0]  # [batch]
                 
                 sign_val = torch.sign(min_llr)
@@ -90,7 +105,7 @@ class LDPCDecoderLoss(nn.Module):
                 iter_loss = 0.5 * (1.0 - sign_through)  # [batch]
             else:
                 raise ValueError(f"Unsupported loss_type: {self.loss_type}")
-            
+
             # Accumulate weighted loss
             loss_sum = loss_sum + iter_weight * iter_loss
             weight_sum = weight_sum + iter_weight
@@ -98,7 +113,7 @@ class LDPCDecoderLoss(nn.Module):
         # Normalize by sum of weights
         loss_ftn = loss_sum / weight_sum if weight_sum > 0 else loss_sum
         
-        # Take mean across batch (matches TF: tf.reduce_mean(loss_ftn))
+        # Take mean across batch
         return torch.mean(loss_ftn)
 
     @staticmethod

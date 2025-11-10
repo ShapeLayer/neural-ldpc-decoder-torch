@@ -67,15 +67,6 @@ def print_train_progress(
     if current_batch == total_batches:
         stdout.write('\n')
 
-def __calc_lr_logarithmic(x: int, total_epochs: int) -> float:
-    if total_epochs <= 1:
-        return 0.01
-    
-    # At x=0: lr=0.01, At x=0.75*total_epochs: lr=0.001, then stays at 0.001
-    threshold = 0.75 * (total_epochs - 1)
-    progress = min(x / threshold, 1.0)
-    return 0.01 * (10 ** (-progress))
-
 def train_boosted_neural_ldpc_decoder():
     # Configure torch device
     device = "cpu"
@@ -151,24 +142,33 @@ def train_boosted_neural_ldpc_decoder():
     # Model
     batch_size = 20
     train_word_length = 10000
+    validate_word_length = 1000
 
     # Training
     loss_type = 0  # 0: BCE (works for zero and non-zero), 1: Soft BER (zero only), 2: FER (zero only)
     etha_init = 1.0  # Exponential weighting: 0=last iter only, 1.0=equal weight, >1=favor early iters
     learning_rate = LearningRate(
-        initial_lr=.001,
-        decay_rate=0,
-        decay_steps=0,
+        initial_lr=0.01,
+        decay_rate=0.5,
+        decay_steps=250,
     )
     train_is_y_all_zero = False
-    train_total_epochs = 20000
+    train_total_epochs = 5000
+
+    # Early stopping
+    patience = 10
+    min_delta = 1e-5
+    best_loss = float('inf')
+    patience_counter = 0
 
     # Validating
     # Setting checkpoint_step and log_metrics_step into multiple of validate_epoch step is recommended.
-    validate_epoch_step = 50
+    validate_epoch_step = 25
     checkpoint_step = validate_epoch_step * 2
     log_metrics_step = validate_epoch_step
-    train_progress_inform_step = 50
+    train_progress_inform_step = 10
+
+    validate_input_length = 1000
 
     # Training iteration parameters
     training_iter_start = fixed_iter
@@ -224,9 +224,10 @@ def train_boosted_neural_ldpc_decoder():
         training_iter_end=training_iter_end,
         fixed_init=fixed_init,
         fixed_iter=fixed_iter,
+        frame_penalty_weight=0.5,
     )
 
-    optimizer = optim.Adam(model.get_trainable_parameters(), lr=__calc_lr_logarithmic(0, train_total_epochs))
+    optimizer = optim.Adam(model.get_trainable_parameters(), lr=learning_rate())
 
     checkpoint_util = CheckPointUtil(checkpoint_dir="checkpoints")
     metrics_logger = MetricsLogger(log_dir="checkpoints")
@@ -234,7 +235,7 @@ def train_boosted_neural_ldpc_decoder():
     # Initializing Done
     
     # Training
-    training_batch_num = floor(train_word_length / batch_size)
+    training_batch_size = floor(train_word_length / batch_size)
 
     # Metrics: define variables that used when validating previously
     avg_valid_loss = 0
@@ -246,9 +247,13 @@ def train_boosted_neural_ldpc_decoder():
     
     for epoch in range(train_total_epochs + 1):
         epoch_loss = 0.0
+
+        current_lr = learning_rate()
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = current_lr
         
-        if epoch > 0:  # Skip training on epoch 0 (just validation)
-            for batch_idx in range(training_batch_num):
+        if epoch > 0:
+            for batch_idx in range(training_batch_size):
                 x_i, y_i = datagen(
                     gentype="mix_snr",
                     word_length=batch_size,
@@ -273,20 +278,22 @@ def train_boosted_neural_ldpc_decoder():
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
+
+                model._apply_constraints()
                 
                 epoch_loss += loss.item()
 
                 if batch_idx % train_progress_inform_step == 0:
                     print_train_progress(
                         current_batch=batch_idx + 1,
-                        total_batches=training_batch_num,
+                        total_batches=training_batch_size,
                         current_epoch=epoch,
                         total_epochs=train_total_epochs,
                         loss=loss.item(),
                         start_time=training_start_time
                     )
             
-            avg_epoch_loss = epoch_loss / training_batch_num
+            avg_epoch_loss = epoch_loss / training_batch_size
             stdout.write('\n')
             stdout.flush()
             print(f"{'=' * 60}")
@@ -298,9 +305,16 @@ def train_boosted_neural_ldpc_decoder():
         # Validation
         if epoch % validate_epoch_step == 0:
             model.eval()
+
+            total_norm = 0.0
+            for p in model.parameters():
+                if p.grad is not None:
+                    param_norm = p.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+            total_norm = total_norm ** 0.5
+            
             with torch.no_grad():
-                valid_num = 1000
-                valid_batch_num = floor(valid_num / batch_size)
+                valid_batch_size = floor(validate_word_length / batch_size)
                 valid_loss = 0.0
                 
                 # BER/FER tracking
@@ -313,7 +327,7 @@ def train_boosted_neural_ldpc_decoder():
                 last_iter_total_frames = 0
                 last_iter_total_frame_errors = 0
                 
-                for batch_idx in range(valid_batch_num):
+                for batch_idx in range(valid_batch_size):
                     x_i, y_i = datagen(
                         gentype="mix_snr",
                         word_length=batch_size,
@@ -332,6 +346,16 @@ def train_boosted_neural_ldpc_decoder():
                     valid_loss += loss.item()
                     
                     (bit_errors, bits), (frame_errors, frames) = Functions.evaluate_ber_fer(y_i, outputs)
+                    
+                    if batch_idx == 0:
+                        per_iter_ber = [be / bits for be in bit_errors]
+                        per_iter_fer = [fe / frames for fe in frame_errors]
+                        print(f">>> Per-Iteration Performance (First Validation Batch):")
+                        best_ber_idx = per_iter_ber.index(min(per_iter_ber))
+                        for i, (b, f) in enumerate(zip(per_iter_ber, per_iter_fer)):
+                            marker = " ← BEST BER" if i == best_ber_idx else ""
+                            print(f"    Iter {i:2d}: BER={b:.6e}, FER={f:.4f}{marker}")
+                        print()
 
                     total_bit_errors += sum(bit_errors)
                     total_bits += bits * len(bit_errors)
@@ -343,7 +367,7 @@ def train_boosted_neural_ldpc_decoder():
                     last_iter_total_frame_errors += frame_errors[-1]
                     last_iter_total_frames += frames
                 
-                avg_valid_loss = valid_loss / valid_batch_num
+                avg_valid_loss = valid_loss / valid_batch_size
                 ber = total_bit_errors / total_bits if total_bits > 0 else 0
                 fer = total_frame_errors / total_frames if total_frames > 0 else 0
                 last_iter_ber = last_iter_total_bit_errors / last_iter_total_bits if last_iter_total_bits > 0 else 0
@@ -352,12 +376,29 @@ def train_boosted_neural_ldpc_decoder():
                 stdout.write('\n')
                 stdout.flush()
                 print(f">>> Validation Results (Epoch {epoch})")
+                print(f">>> Gradient norm: {total_norm:.6f}")
+                print(f">>> Learning rate: {current_lr:.6e}")
                 print(f">>> Validation loss: {avg_valid_loss:.6f}")
                 print(f">>> BER(entire iter): {ber:.6e} ({total_bit_errors:.0f}/{total_bits})")
                 print(f">>> FER(entire iter): {fer:.6f} ({total_frame_errors:.0f}/{total_frames})")
                 print(f">>> BER(last iter): {last_iter_ber:.6e} ({last_iter_total_bit_errors:.0f}/{last_iter_total_bits})")
                 print(f">>> FER(last iter): {last_iter_fer:.6f} ({last_iter_total_frame_errors:.0f}/{last_iter_total_frames})")
                 print()
+
+                if avg_valid_loss < best_loss - min_delta:
+                    best_loss = avg_valid_loss
+                    patience_counter = 0
+                    print(f">>> New best loss: {best_loss:.6f}")
+                else:
+                    patience_counter += 1
+                    print(f">>> No improvement ({patience_counter}/{patience})")
+                    
+                    if patience_counter >= patience:
+                        print(f"\n{'='*60}")
+                        print(f"Early stopping triggered at epoch {epoch}")
+                        print(f"Best loss: {best_loss:.6f}")
+                        print(f"{'='*60}\n")
+                        break
 
         # During training/validation:
         # metrics are defined before the loop entry
@@ -368,7 +409,9 @@ def train_boosted_neural_ldpc_decoder():
             'ber_last_iter': last_iter_ber,
             'fer_last_iter': last_iter_fer,
         }
-        checkpoint_dumping_cfg = {"batch_size": batch_size, "lr": __calc_lr_logarithmic(epoch, train_total_epochs)}
+        checkpoint_dumping_cfg = { "batch_size": batch_size, "lr": current_lr }
+        checkpoint_filename = "NA"
+
         # Check point
         if epoch % checkpoint_step == 0:
             checkpoint_filename = f"checkpoint_epoch_{epoch:04d}.pth"
@@ -390,11 +433,11 @@ def train_boosted_neural_ldpc_decoder():
         # Log metrics
         if epoch % log_metrics_step == 0:
             metrics_logger.log(
-            epoch=epoch,
-            metrics=metrics,
-            checkpoint_filename=checkpoint_filename,
-            config=checkpoint_dumping_cfg
-        )
+                epoch=epoch,
+                metrics=metrics,
+                checkpoint_filename=checkpoint_filename,
+                config=checkpoint_dumping_cfg
+            )
 
 if __name__ == '__main__':
     train_boosted_neural_ldpc_decoder()
