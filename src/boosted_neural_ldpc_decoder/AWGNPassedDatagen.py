@@ -100,7 +100,6 @@ class AWGNPassedDatagen:
                 noise = self._awgn_noise_random.normal(0.0, 1.0, Y_i.shape)
                 X_p_i = noise * each_sf + (-1) ** (1 - Y_i)
                 
-                # Compute LLR: defined as log(p(0)/p(1))
                 x_llr_i = 2 * X_p_i / (each_sf ** 2)
 
                 # Apply quantization for QMS
@@ -160,7 +159,6 @@ class AWGNPassedDatagen:
                 noise = self._awgn_noise_random.normal(0.0, 1.0, Y_i.shape)
                 X_p_i = noise * each_sf + (-1) ** (1 - Y_i)
                 
-                # Compute LLR
                 x_llr_i = 2 * X_p_i / (each_sf ** 2)
 
                 # Apply quantization for QMS

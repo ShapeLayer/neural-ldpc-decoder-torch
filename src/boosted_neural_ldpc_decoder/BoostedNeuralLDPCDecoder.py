@@ -260,7 +260,7 @@ class BoostedNeuralLDPCDecoder(nn.Module):
             fixed_iter: Optional[int | list[int]] = None,
             fixed_iter_weight: Optional[torch.Tensor | list[torch.Tensor]] = None,
         ):
-        is_input_iterable = target_iter == None and isinstance(target_iter, list)
+        is_input_iterable = target_iter == None or isinstance(target_iter, list)
         if is_input_iterable:
             assert self.iter_node_counts == len(xa)
             assert isinstance(xa[0], torch.Tensor)
@@ -283,12 +283,15 @@ class BoostedNeuralLDPCDecoder(nn.Module):
             assert len(fixed_iteration) == len(fixed_iter_weight)
         
         xa_input: torch.Tensor = None
+        xa_origin: torch.Tensor = None
         if not is_input_iterable:
             xa_input = xa.transpose(1, 2)  # [batch, Z, N]
+            xa_origin = xa_input.clone()
 
         for curr_iter in iteration:
             if is_input_iterable:
                 xa_input = xa[curr_iter].transpose(1, 2)  # [batch, Z, N]
+                xa_origin = xa_input.clone()
 
             vn_weight = self.fetch_param(ParamType.Weight, NodeType.VN, curr_iter)
 
@@ -300,6 +303,8 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                     xa_input = torch.mul(xa_input, vn_weight)
                 else:
                     xa_input = torch.mul(xa_input, fixed_iter_weight[fixed_iteration_index])
+            elif self.node_weight_sharing_config.get(NodeType.VN) == 1:
+                xa_input = torch.mul(xa_input, vn_weight)
 
             if self.decoding_type == DecoderType.QMS:
                 xa_input = self._quantize_message(xa_input, self.decoder_qms_qbit)
@@ -309,16 +314,14 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                     VN_APP = xa_input   # [B, Z, N]
                 else:
                     VN_APP = self.outputs[curr_iter - 1].reshape(self.batch_size, self.N, self.Z)  # [B, N, Z]
-                    # WARN: T :
                     VN_APP = VN_APP.transpose(1, 2)  # [B, Z, N]
                 
-                VN_APP = -VN_APP
+                VN_APP = -VN_APP  #[B, Z, N] Note that (APP>0 <-> Dec=0)
                 VN_APP_sign = torch.add((VN_APP > 0).float(), -(VN_APP <= 0).float())  # [B, Z, N]
                 VN_APP_sign_edge = torch.matmul(VN_APP_sign, self.W_skipconn2even)  # [B, Z, E]
                 VN_APP_sign_edge = VN_APP_sign_edge.transpose(1, 2)  # [B, E, Z]
                 VN_APP_sign_edge = VN_APP_sign_edge.reshape(self.batch_size, self.sum_edge * self.Z)  # [B, E * Z]
                 CN_in_sign = torch.matmul(VN_APP_sign_edge, self.Lift_Matrix1.t())  # [B, E * Z]
-                # WARN: T :
                 CN_in_sign = CN_in_sign.reshape(self.batch_size, self.sum_edge, self.Z)  # [B, E, Z]
                 CN_in_sign = CN_in_sign.transpose(1, 2)  # [B, Z, E]
                 CN_in_sign_tile = torch.tile(CN_in_sign, (1, 1, self.sum_edge))  # [B, Z, E, E]
@@ -416,8 +419,8 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                         self.fetch_param(ParamType.Weight, NodeType.UCN, curr_iter).view(1, -1),
                         self.W_skipconn2odd
                     )
-                    x_output_11 = torch.mul(torch.abs(x_output_0))
-                    x_output_12 = torch.mul(torch.abs(x_output_0))
+                    x_output_11 = torch.mul(torch.abs(x_output_0), W_per_edge_1)
+                    x_output_12 = torch.mul(torch.abs(x_output_0), W_per_edge_2)
                     x_output_1 = torch.add(
                         torch.mul(x_output_11, -UCN_idx_edge + 1.0),
                         torch.mul(x_output_12, UCN_idx_edge)
@@ -444,8 +447,8 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                         ).view(1, self.M),
                         self.W_skipconn2odd
                     )
-                    x_output_11 = torch.mul(torch.mul(torch.abs(x_output_0)), W_per_edge_1)
-                    x_output_12 = torch.mul(torch.mul(torch.abs(x_output_0)), W_per_edge_2)
+                    x_output_11 = torch.mul(torch.abs(x_output_0), W_per_edge_1)
+                    x_output_12 = torch.mul(torch.abs(x_output_0), W_per_edge_2)
                     x_output_1 = torch.add(
                         torch.mul(x_output_11, SCN_idx_edge),
                         torch.mul(x_output_12, UCN_idx_edge)
@@ -466,7 +469,7 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                     W_per_edge = fixed_iter_weight[fixed_iteration_index]
                 x_output_1 = torch.mul(torch.abs(x_output_0), W_per_edge)  # [B, Z, E]
 
-            x_output_2 = torch.mul(x_output_1, (x_output_0 >= 0).float())  # [B, Z, E]
+            x_output_2 = torch.mul(x_output_1, (x_output_1 > 0).float())  # [B, Z, E]
 
             if self.decoding_type == DecoderType.QMS:
                 x_output_2 = self._quantize_message(x_output_2, self.decoder_qms_qbit)
@@ -479,9 +482,9 @@ class BoostedNeuralLDPCDecoder(nn.Module):
 
             # decision
             if self.decoding_type == DecoderType.QMS:
-                xa = self._quantize_message(xa, self.decoder_qms_qbit)
+                xa_origin = self._quantize_message(xa_origin, self.decoder_qms_qbit)
             
-            y_output_4 = torch.add(xa_input, y_output_3)  # [B, N, Z]
+            y_output_4 = torch.add(xa_origin, y_output_3)  # [B, N, Z]
             y_output_4 = torch.clamp(y_output_4, self.allowed_llr_range.start, self.allowed_llr_range.end)
 
             self.outputs[curr_iter] = torch.reshape(
@@ -493,4 +496,9 @@ class BoostedNeuralLDPCDecoder(nn.Module):
             # Postprocess for next iteration
             fixed_iteration_index += 1
 
-        return self.outputs
+        if isinstance(target_iter, int):
+            return self.outputs[target_iter]
+        elif isinstance(target_iter, list):
+            return [self.outputs[i] for i in target_iter]
+        else:
+            return self.outputs

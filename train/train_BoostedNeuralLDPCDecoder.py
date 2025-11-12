@@ -253,7 +253,6 @@ def train_boosted_neural_ldpc_decoder():
             for param_group in optimizer.param_groups:
                 param_group['lr'] = current_lr
 
-            # Swap the loop order: batch first, then iterations
             for batch_idx in range(training_batch_size):
                 x_i, y_i = datagen(
                     gentype="mix_snr",
@@ -268,17 +267,23 @@ def train_boosted_neural_ldpc_decoder():
                 x_i = torch.tensor(x_i, dtype=torch.float32, device=device)
                 y_i = torch.tensor(y_i, dtype=torch.float32, device=device)
                 
-                # Forward pass and accumulate loss across iterations
                 model.train()
                 optimizer.zero_grad()
                 
-                total_loss = 0.0
-                for curr_iter in range(training_iter_start, training_iter_end):
-                    outputs = model(x_i, target_iter=curr_iter)
-                    loss = criterion(outputs[curr_iter], y_i)
-                    total_loss += loss
+                # NOTE: Single forward pass through ALL iterations with this batch's data
+                all_outputs = model(
+                    x_i,  # Same x_i for all iterations
+                    target_iter=list(range(training_iter_start, training_iter_end))
+                )
                 
-                # Single backward pass for all iterations
+                # Compute loss on all iteration outputs
+                total_loss = criterion(
+                    all_outputs,
+                    y_i,
+                    coeff_param=list(range(len(all_outputs)))
+                )
+                
+                # Single backward pass propagates gradients through ALL iterations
                 total_loss.backward()
                 optimizer.step()
                 model._apply_constraints()

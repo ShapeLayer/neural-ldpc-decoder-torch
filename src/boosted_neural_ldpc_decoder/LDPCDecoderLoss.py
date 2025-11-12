@@ -38,23 +38,23 @@ class LDPCDecoderLoss(nn.Module):
     def forward(
             self,
             outputs: Optional[list | torch.Tensor],
-            targets: Optional[list | torch.Tensor],
+            expected: Optional[list | torch.Tensor],
             coeff_param: Optional[list | int] = 1,
         ) -> torch.Tensor:
-        # Available Cases in outputs and targets:
+        # Available Cases in outputs and expected:
         is_valid = 0
-        # 1. outputs: torch.Tensor, targets: torch.Tensor
-        if is_valid == 0 and (isinstance(outputs, torch.Tensor) and isinstance(targets, torch.Tensor)):
+        # 1. outputs: torch.Tensor, expected: torch.Tensor
+        if is_valid == 0 and (isinstance(outputs, torch.Tensor) and isinstance(expected, torch.Tensor)):
             is_valid = 1
-        # 2. outputs: list of torch.Tensor, targets: torch.Tensor
-        if is_valid == 0 and (isinstance(outputs, list) and isinstance(targets, torch.Tensor)):
+        # 2. outputs: list of torch.Tensor, expected: torch.Tensor
+        if is_valid == 0 and (isinstance(outputs, list) and isinstance(expected, torch.Tensor)):
             is_valid = 2
-        # 3. outputs: list of torch.Tensor, targets: list of torch.Tensor
-        if not is_valid and isinstance(outputs, list) and isinstance(targets, list):
-            if len(outputs) == len(targets):
+        # 3. outputs: list of torch.Tensor, expected: list of torch.Tensor
+        if not is_valid and isinstance(outputs, list) and isinstance(expected, list):
+            if len(outputs) == len(expected):
                 is_valid = 3
         if is_valid == 0:
-            raise ValueError("Invalid types for outputs and targets in LDPCDecoderLoss. Outputs must be either a torch.Tensor or a list of torch.Tensor. Targets must be either a torch.Tensor or a list of torch.Tensor with matching length to outputs.")
+            raise ValueError("Invalid types for outputs and expected in LDPCDecoderLoss. Outputs must be either a torch.Tensor or a list of torch.Tensor. expected must be either a torch.Tensor or a list of torch.Tensor with matching length to outputs.")
         
         # Validate Coeff Param used in weighting loss across iterations
         if is_valid == 1:
@@ -74,7 +74,7 @@ class LDPCDecoderLoss(nn.Module):
             len(outputs) if is_valid != 1 else 1
         ):
             now_actual = outputs[curr_iter] if is_valid != 1 else outputs
-            now_target = targets[curr_iter] if is_valid == 3 else targets
+            now_expect = expected[curr_iter] if is_valid == 3 else expected
             now_coeff = 1
             if coeff_param is not None:
                 now_coeff = coeff_param[curr_iter] if isinstance(coeff_param, list) else coeff_param
@@ -85,7 +85,7 @@ class LDPCDecoderLoss(nn.Module):
                     now_coeff
                 ) * nn.functional.binary_cross_entropy_with_logits(
                     now_actual,  # logits
-                    now_target,  # labels
+                    now_expect,  # labels
                 )
             elif self.loss_type == LossType.SoftBEROnAllZero:
                 loss_ftn = loss_ftn + pow(

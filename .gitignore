@@ -1,5 +1,6 @@
 .DS_Store
 checkpoints
+*.legacy.py
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
