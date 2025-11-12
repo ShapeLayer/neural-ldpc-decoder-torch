@@ -84,8 +84,8 @@ class LDPCDecoderLoss(nn.Module):
                     self.etha,
                     now_coeff
                 ) * nn.functional.binary_cross_entropy_with_logits(
-                    now_target,  # labels
                     now_actual,  # logits
+                    now_target,  # labels
                 )
             elif self.loss_type == LossType.SoftBEROnAllZero:
                 loss_ftn = loss_ftn + pow(
@@ -103,6 +103,6 @@ class LDPCDecoderLoss(nn.Module):
                 self.etha,
                 now_coeff
             )
-            loss_ftn = loss_ftn / _coeff if _coeff > 0 else loss_ftn
 
-            return 1.0 * loss_ftn.mean()
+        loss_ftn = loss_ftn / _coeff if _coeff > 0 else loss_ftn
+        return 1.0 * loss_ftn.mean()
