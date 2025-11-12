@@ -310,9 +310,7 @@ def train_boosted_neural_ldpc_decoder():
                     start_time=training_start_time
                 )
 
-            # Calculate average loss per iteration
-            total_iterations = training_iter_end - training_iter_start
-            avg_epoch_loss = epoch_loss / (training_batch_size * total_iterations) if training_batch_size > 0 else 0.0
+            avg_epoch_loss = epoch_loss / training_batch_size if training_batch_size > 0 else 0.0
             stdout.write('\n')
             stdout.flush()
             print(f"{'=' * 60}")
