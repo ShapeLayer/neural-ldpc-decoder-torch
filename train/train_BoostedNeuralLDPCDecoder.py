@@ -90,9 +90,9 @@ def train_boosted_neural_ldpc_decoder():
     genmatrix = np.loadtxt("resources/gen_matrix_bg2_z16.txt", int, delimiter=",")
     Z = 16
 
-    basegraph = np.loadtxt("resources/wman_N0576_R34_z24.txt", int, delimiter="\t")
-    genmatrix = None
-    Z = 24
+    # basegraph = np.loadtxt("resources/wman_N0576_R34_z24.txt", int, delimiter="\t")
+    # genmatrix = None
+    # Z = 24
 
     # Initialize connecting matrix
     """
@@ -157,7 +157,7 @@ def train_boosted_neural_ldpc_decoder():
         decay_rate=0.5,
         decay_steps=250,
     )
-    train_is_y_all_zero = True
+    train_is_y_all_zero = False
     train_total_epochs = 5000
 
     # Early stopping

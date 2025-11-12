@@ -255,16 +255,29 @@ class BoostedNeuralLDPCDecoder(nn.Module):
 
     def forward(
             self,
-            xa: Optional[torch.Tensor | list[torch.Tensor]],
-            target_iter: Optional[int | list[int]] = None,
-            fixed_iter: Optional[int | list[int]] = None,
-            fixed_iter_weight: Optional[torch.Tensor | list[torch.Tensor]] = None,
+            xa: torch.Tensor | list[torch.Tensor],
+            target_iter: int | list[int] = None,
+            fixed_iter: int | list[int] = None,
+            fixed_iter_weight: torch.Tensor | list[torch.Tensor] = None,
         ):
-        is_input_iterable = target_iter == None or isinstance(target_iter, list)
-        if is_input_iterable:
-            assert self.iter_node_counts == len(xa)
-            assert isinstance(xa[0], torch.Tensor)
-
+        """
+        xa: input tensor
+            (torch.Tensor): broadcast to all iterations, shape [batch, N, Z]
+            (list[torch.Tensor]): list of tensors for each iteration, each shape [batch, N, Z]
+        target_iter: target iteration(s) to process and return
+            (int): single iteration to return
+            (list[int]): list of iterations to return
+            (None): process all iterations and return all outputs
+        fixed_iter: fixed iterations before applying fixed weights
+            (int): single iteration index
+            (list[int]): list of iteration indices
+            \* even if the item of fixed_iter not in target_iter, it would be used in processing
+        fixed_iter_weight: weights for fixed iterations
+            if fixed_iter is provided, fixed_iter_weight must be provided
+            (torch.Tensor): single weight tensor
+            (list[torch.Tensor]): list of weight tensors corresponding to fixed_iter
+        """
+        
         iteration: list[int] = None
         if isinstance(target_iter, int):
             iteration = [target_iter]
@@ -272,6 +285,18 @@ class BoostedNeuralLDPCDecoder(nn.Module):
             iteration = target_iter
         else:
             iteration = list(range(self.iter_node_counts))
+        
+        if fixed_iter is not None:
+            for each_iter in fixed_iter:
+                if each_iter not in iteration:
+                    iteration.append(each_iter)
+        
+        iteration = sorted(iteration)
+
+        is_input_iterable = isinstance(xa, list)
+        if is_input_iterable:
+            assert len(xa) == len(iteration) - len(fixed_iter)
+            assert isinstance(xa[0], torch.Tensor)
 
         fixed_iteration_index = 0
         fixed_iteration: list[int] = []
@@ -281,17 +306,17 @@ class BoostedNeuralLDPCDecoder(nn.Module):
             fixed_iteration = fixed_iter
         if len(fixed_iteration) > 0:
             assert len(fixed_iteration) == len(fixed_iter_weight)
-        
+
         xa_input: torch.Tensor = None
         xa_origin: torch.Tensor = None
         if not is_input_iterable:
+            xa_origin = xa.clone()
             xa_input = xa.transpose(1, 2)  # [batch, Z, N]
-            xa_origin = xa_input.clone()
 
         for curr_iter in iteration:
             if is_input_iterable:
-                xa_input = xa[curr_iter].transpose(1, 2)  # [batch, Z, N]
                 xa_origin = xa_input.clone()
+                xa_input = xa[curr_iter].transpose(1, 2)  # [batch, Z, N]
 
             vn_weight = self.fetch_param(ParamType.Weight, NodeType.VN, curr_iter)
 
@@ -483,7 +508,7 @@ class BoostedNeuralLDPCDecoder(nn.Module):
             # decision
             if self.decoding_type == DecoderType.QMS:
                 xa_origin = self._quantize_message(xa_origin, self.decoder_qms_qbit)
-            
+
             y_output_4 = torch.add(xa_origin, y_output_3)  # [B, N, Z]
             y_output_4 = torch.clamp(y_output_4, self.allowed_llr_range.start, self.allowed_llr_range.end)
 
@@ -494,7 +519,8 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                     
 
             # Postprocess for next iteration
-            fixed_iteration_index += 1
+            if curr_iter in fixed_iteration:
+                fixed_iteration_index += 1
 
         if isinstance(target_iter, int):
             return self.outputs[target_iter]
