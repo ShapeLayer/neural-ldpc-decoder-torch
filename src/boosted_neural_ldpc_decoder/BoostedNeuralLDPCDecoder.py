@@ -91,6 +91,15 @@ class BoostedNeuralLDPCDecoder(nn.Module):
         self.register_buffer('Lift_Matrix1', self.conn_mat.lifting_matrix_1)
         self.register_buffer('Lift_Matrix2', self.conn_mat.lifting_matrix_2)
 
+        self.outputs = [
+            torch.zeros((self.batch_size, self.N * self.Z), dtype=torch.float32, device=self.conn_mat.device)
+            for _ in range(self.iter_node_counts)
+        ]
+        self.llr = [
+            torch.zeros((self.batch_size, self.Z, self.sum_edge), dtype=torch.float32, device=self.conn_mat.device)
+            for _ in range(self.iter_node_counts + 1)
+        ]
+
         self._register_params()
 
     def _param_name(self, param_type: ParamType, node_type: NodeType, iterative_node_identifier: int):
@@ -244,189 +253,244 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                     params.append(param)
         return params
 
-    def forward(self, xa):
-        batch_size = xa.shape[0]
-        xa_input = xa.transpose(1, 2)  # [batch, Z, N]
+    def forward(
+            self,
+            xa: Optional[torch.Tensor | list[torch.Tensor]],
+            target_iter: Optional[int | list[int]] = None,
+            fixed_iter: Optional[int | list[int]] = None,
+            fixed_iter_weight: Optional[torch.Tensor | list[torch.Tensor]] = None,
+        ):
+        is_input_iterable = target_iter == None and isinstance(target_iter, list)
+        if is_input_iterable:
+            assert self.iter_node_counts == len(xa)
+            assert isinstance(xa[0], torch.Tensor)
 
-        # Initialize LLR
-        prev_llr = torch.zeros((batch_size, self.Z, self.sum_edge),
-                               dtype=torch.float32, device=self.conn_mat.device)
+        iteration: list[int] = None
+        if isinstance(target_iter, int):
+            iteration = [target_iter]
+        elif isinstance(target_iter, list):
+            iteration = target_iter
+        else:
+            iteration = list(range(self.iter_node_counts))
 
-        outputs = []
+        fixed_iteration_index = 0
+        fixed_iteration: list[int] = []
+        if isinstance(fixed_iter, int):
+            fixed_iteration = [fixed_iter]
+        elif isinstance(fixed_iter, list):
+            fixed_iteration = fixed_iter
+        if len(fixed_iteration) > 0:
+            assert len(fixed_iteration) == len(fixed_iter_weight)
+        
+        xa_input: torch.Tensor = None
+        if not is_input_iterable:
+            xa_input = xa.transpose(1, 2)  # [batch, Z, N]
 
-        # Check TF code: xa_input is multiplied by VN weight before VN operations
-        for curr_iter in range(self.iter_node_counts):
+        for curr_iter in iteration:
+            if is_input_iterable:
+                xa_input = xa[curr_iter].transpose(1, 2)  # [batch, Z, N]
+
             vn_weight = self.fetch_param(ParamType.Weight, NodeType.VN, curr_iter)
-            if vn_weight is not None:
-                if vn_weight.numel() == 1:
-                    xa_input_weighted = xa_input * vn_weight
-                elif vn_weight.numel() == self.N:
-                    xa_input_weighted = xa_input * vn_weight.view(1, 1, -1)
+
+            if self.node_weight_sharing_config.get(NodeType.VN) == 2 or \
+               self.node_weight_sharing_config.get(NodeType.VN) == 3:
+                xa_input = torch.mul(xa_input, vn_weight)
+            elif self.node_weight_sharing_config.get(NodeType.VN) == 4:
+                if curr_iter not in fixed_iteration:
+                    xa_input = torch.mul(xa_input, vn_weight)
                 else:
-                    xa_input_weighted = xa_input
-            else:
-                xa_input_weighted = xa_input
+                    xa_input = torch.mul(xa_input, fixed_iter_weight[fixed_iteration_index])
 
-            # Apply quantization once
             if self.decoding_type == DecoderType.QMS:
-                xa_input_qms = self._quantize_message(xa_input_weighted, self.decoder_qms_qbit)
-            else:
-                xa_input_qms = xa_input_weighted
-
-            # UCN calculation uses APP from PREVIOUS DECODER OUTPUT
+                xa_input = self._quantize_message(xa_input, self.decoder_qms_qbit)
+            
             if self.node_weight_sharing_config.get(NodeType.UCN) > 0:
                 if curr_iter == 0:
-                    VN_APP = xa_input_qms
+                    VN_APP = xa_input   # [B, Z, N]
                 else:
-                    VN_APP = outputs[-1].reshape(batch_size, self.N, self.Z).transpose(1, 2)
-                    if self.decoding_type == DecoderType.QMS:
-                        VN_APP = self._quantize_message(VN_APP, self.decoder_qms_qbit)
-
-                VN_APP_sign = torch.sign(-VN_APP)
-                VN_APP_sign = torch.where(VN_APP_sign == 0, torch.ones_like(VN_APP_sign), VN_APP_sign)
-
-                VN_APP_sign_edge = torch.matmul(VN_APP_sign, self.W_skipconn2even)
-                VN_APP_sign_edge = VN_APP_sign_edge.transpose(1, 2).reshape(batch_size, self.sum_edge * self.Z)
+                    VN_APP = self.outputs[curr_iter - 1].reshape(self.batch_size, self.N, self.Z)  # [B, N, Z]
+                    # WARN: T :
+                    VN_APP = VN_APP.transpose(1, 2)  # [B, Z, N]
                 
-                CN_in_sign = torch.matmul(VN_APP_sign_edge, self.Lift_Matrix1.t())
-                CN_in_sign = CN_in_sign.reshape(batch_size, self.sum_edge, self.Z).transpose(1, 2)
-                
-                CN_in_sign_tile = CN_in_sign.unsqueeze(3).repeat(1, 1, 1, self.sum_edge)
-                CN_in_sign_tile = CN_in_sign_tile * self.W_even2odd_with_self.t().reshape(-1)
-                CN_in_sign_tile = CN_in_sign_tile.reshape(batch_size, self.Z, self.sum_edge, self.sum_edge)
-                CN_in_sign_tile = CN_in_sign_tile + 1.0 * (1 - (CN_in_sign_tile.abs() > 0).float())
-                
-                CN_sign_prod = torch.prod(CN_in_sign_tile, dim=3)
-                UCN_idx_edge = (CN_sign_prod < 0).float()
-                
-                UCN_idx_edge = UCN_idx_edge.transpose(1, 2).reshape(batch_size, self.Z * self.sum_edge)
-                UCN_idx_edge = torch.matmul(UCN_idx_edge, self.Lift_Matrix2)
-                UCN_idx_edge = UCN_idx_edge.reshape(batch_size, self.sum_edge, self.Z).transpose(1, 2)
-                
-                SCN_idx_edge = 1.0 - UCN_idx_edge
+                VN_APP = -VN_APP
+                VN_APP_sign = torch.add((VN_APP > 0).float(), -(VN_APP <= 0).float())  # [B, Z, N]
+                VN_APP_sign_edge = torch.matmul(VN_APP_sign, self.W_skipconn2even)  # [B, Z, E]
+                VN_APP_sign_edge = VN_APP_sign_edge.transpose(1, 2)  # [B, E, Z]
+                VN_APP_sign_edge = VN_APP_sign_edge.reshape(self.batch_size, self.sum_edge * self.Z)  # [B, E * Z]
+                CN_in_sign = torch.matmul(VN_APP_sign_edge, self.Lift_Matrix1.t())  # [B, E * Z]
+                # WARN: T :
+                CN_in_sign = CN_in_sign.reshape(self.batch_size, self.sum_edge, self.Z)  # [B, E, Z]
+                CN_in_sign = CN_in_sign.transpose(1, 2)  # [B, Z, E]
+                CN_in_sign_tile = torch.tile(CN_in_sign, (1, 1, self.sum_edge))  # [B, Z, E, E]
+                CN_in_sign_tile = torch.mul(CN_in_sign_tile, self.W_even2odd_with_self.t().reshape(-1))  # [B, Z, E, E]
+                CN_in_sign_tile = torch.reshape(CN_in_sign_tile, (self.batch_size, self.Z, self.sum_edge, self.sum_edge))
+                CN_in_sign_tile = torch.add(CN_in_sign_tile, torch.mul(1.0, torch.add(-torch.abs(CN_in_sign_tile > 0).float(), 1.0)))
+                CN_sign_edge = torch.prod(CN_in_sign_tile, dim=3)
+                UCN_idx_edge = (CN_sign_edge < 0).float()  # [B, Z, E]
+                UCN_idx_edge = UCN_idx_edge.transpose(1, 2)  # [B, E, Z]
+                UCN_idx_edge = UCN_idx_edge.reshape(self.batch_size, self.Z * self.sum_edge)  # [B, E * Z]
+                UCN_idx_edge = torch.matmul(UCN_idx_edge, self.Lift_Matrix2)  # [B, E * Z]
+                UCN_idx_edge = UCN_idx_edge.reshape(self.batch_size, self.sum_edge, self.Z)  # [B, E, Z]
+                UCN_idx_edge = UCN_idx_edge.transpose(1, 2)  # [B, Z, E]
+                SCN_idx_edge = torch.add(1.0, -UCN_idx_edge)  # [B, Z, E]
             else:
-                UCN_idx_edge = torch.zeros((batch_size, self.Z, self.sum_edge), device=self.conn_mat.device)
-                SCN_idx_edge = torch.ones((batch_size, self.Z, self.sum_edge), device=self.conn_mat.device)
+                UCN_idx_edge = torch.zeros((self.batch_size, self.Z, self.sum_edge), device=self.conn_mat.device, dtype=torch.float32)
+                SCN_idx_edge = torch.ones((self.batch_size, self.Z, self.sum_edge), device=self.conn_mat.device, dtype=torch.float32)
 
-            x0 = torch.matmul(xa_input_qms, self.W_skipconn2even)
-            x1 = torch.matmul(prev_llr, self.W_odd2even)
-            x2 = x0 + x1
+            x0 = torch.matmul(xa_input, self.W_skipconn2even)  # [B, Z, E]
+            x1 = torch.matmul(self.llr[curr_iter], self.W_odd2even)  # [B, Z, E]
+            x2 = torch.add(x0, x1)  # [B, Z, E]
+
+            x2 = x2.transpose(1, 2)  # [B, E, Z]
+            x2 = x2.reshape(self.batch_size, self.sum_edge * self.Z)  # [B, E * Z]
+            x2 = torch.matmul(x2, self.conn_mat.lifting_matrix_1.t())  # [B, E * Z]
+            x2 = x2.reshape(self.batch_size, self.sum_edge, self.Z)  # [B, E, Z]
+            x2 = x2.transpose(1, 2)  # [B, Z, E]
 
             if self.decoding_type == DecoderType.QMS:
-                x2 = torch.clamp(x2, self.allowed_llr_range.start, self.allowed_llr_range.end)
                 x2 = self._quantize_message(x2, self.decoder_qms_qbit)
             else:
                 x2 = torch.clamp(x2, self.allowed_llr_range.start, self.allowed_llr_range.end)
+            
+            if self.decoding_type == DecoderType.MS or \
+                self.decoding_type == DecoderType.QMS:
+                x2 = x2 + 0.0001 * (1 - (torch.abs(x2) > 0).float())
+            x_tile = torch.tile(x2, (1, 1, self.sum_edge))  # [B, Z, E, E]
+            W_input_reshape = self.W_even2odd.t().reshape(-1)  # [E * E]
 
-            # Transform using lifting_matrix
-            x2 = x2.transpose(1, 2)
-            x2 = x2.reshape(batch_size, self.sum_edge * self.Z)
-            x2 = torch.matmul(x2, self.conn_mat.lifting_matrix_1.t())
-            x2 = x2.reshape(batch_size, self.sum_edge, self.Z)
-            x2 = x2.transpose(1, 2)
-
-            # Tile for check node computation
-            x_tile = x2.repeat(1, 1, self.sum_edge)
-            W_input_reshape = self.W_even2odd.t().reshape(-1)
-
-            # Check node update
-            x_tile_mul = x_tile * W_input_reshape
-            x2_1 = x_tile_mul.reshape(batch_size, self.Z, self.sum_edge, self.sum_edge)
+            x_tile_mul = torch.mul(x_tile, W_input_reshape)  # [B, Z, E, E]
+            x2_1 = x_tile_mul.reshape(self.batch_size, self.Z, self.sum_edge, self.sum_edge)  # [B, Z, E, E]
 
             if self.decoding_type == DecoderType.SP:
                 # Sum-product operations
-                x2_tanh = torch.tanh(-0.5 * x2_1)
-                mask = (x2_tanh.abs() > 0).float()
-                x2_abs = x2_tanh + (1.0 - mask)
-                x3 = torch.prod(x2_abs, dim=3)
-                
+                x2_tanh = torch.tanh(torch.mul(-0.5, x2_1))
+                x2_abs = torch.add(x2_tanh, torch.mul(1.0 - torch.abs(x2_tanh > 0).float(), 1.0))
+                x3 = torch.prod(x2_abs, dim=3)  # [B, Z, E]
+
                 epsilon = 1e-7
                 x3_clipped = torch.clamp(x3, -1 + epsilon, 1 - epsilon)
-                x_output_0 = -2.0 * torch.atanh(x3_clipped)
-            else:
-                # Calculate structural zero mask BEFORE epsilon addition
-                structural_zero_mask = (torch.abs(x2_1) < 1e-6).float()
-                
-                # Add epsilon to avoid zero-min issues (for MS/QMS)
-                if self.decoding_type == DecoderType.MS or self.decoding_type == DecoderType.QMS:
-                    x2_1 = x2_1 + 0.0001 * (1 - (torch.abs(x2_1) > 0).float())
-
-                # Apply structural zero mask to absolute values
-                x2_abs = torch.abs(x2_1)
-                x2_abs = x2_abs + 10000.0 * structural_zero_mask
-                
-                # Find minimum
-                x3 = torch.min(x2_abs, dim=3)[0]
-                
-                # Restore small epsilon value if result was epsilon
-                x3 = x3 - 0.0001 * (1 - (torch.abs(x3) > 0.0001).float())
-
-                # Sign product (structural zeros contribute +1 to sign)
-                x2_2 = -x2_1
-                x4 = 1.0 - 2.0 * (x2_2 < 0).float()
-                x4 = x4 + structural_zero_mask * (1.0 - x4)
-                x4_prod = -torch.prod(x4, dim=3)
-                
-                x_output_0 = x3 * torch.sign(x4_prod)
+                x_output_0 = torch.mul(-2.0, torch.atanh(x3_clipped))
+            elif self.decoding_type == DecoderType.MS or \
+                 self.decoding_type == DecoderType.QMS:
+                x2_abs = torch.add(
+                    torch.abs(x2_1),
+                    torch.mul(10000.0, 1.0 - (x2_1 > 0).float())
+                )
+                x3 = torch.min(x2_abs, dim=3)[0]  # torch.min returns (values, indices)
+                x3 = torch.add(x3, torch.mul(-0.0001, torch.add(-(x3 > 0.0001).float(), 1.0)))
+                x2_2 = torch.mul(-1.0, x2_1)
+                x4 = torch.add(
+                    torch.zeros((self.batch_size, self.Z, self.sum_edge, self.sum_edge), device=self.conn_mat.device, dtype=torch.float32),
+                    torch.mul(1.0, torch.add(-(x2_2 > 0).float(), 1.0))
+                )
+                x4_prod = torch.mul(-1.0, torch.prod(x4, dim=3))  # [B, Z, E]
+                x_output_0 = torch.mul(x3, torch.sign(x4_prod))
             
-            x_output_0 = x_output_0.transpose(1, 2)
-            x_output_0 = x_output_0.reshape(batch_size, self.sum_edge * self.Z)
-            x_output_0 = torch.matmul(x_output_0, self.Lift_Matrix2)
-            x_output_0 = x_output_0.reshape(batch_size, self.sum_edge, self.Z)
-            x_output_0 = x_output_0.transpose(1, 2)
+            x_output_0 = x_output_0.transpose(1, 2)  # [B, E, Z]
+            x_output_0 = x_output_0.reshape(self.batch_size, self.Z * self.sum_edge)  # [B, E * Z]
+            x_output_0 = torch.matmul(x_output_0, self.Lift_Matrix2)  # [B, Z, E]
+            x_output_0 = x_output_0.reshape(self.batch_size, self.sum_edge, self.Z)  # [B, E, Z]
+            x_output_0 = x_output_0.transpose(1, 2)  # [B, Z, E]
 
-            x_output_abs = torch.abs(x_output_0)
-
-            # Fetch and apply CN weight
-            cn_weight = self.fetch_param(ParamType.Weight, NodeType.CN, curr_iter)
-            if cn_weight is not None:
-                if cn_weight.numel() == 1:
-                    weighted_abs = x_output_abs * cn_weight
-                elif cn_weight.numel() == self.sum_edge:
-                    weighted_abs = x_output_abs * cn_weight.view(1, 1, -1)
-                elif cn_weight.numel() == self.M:
-                    expanded_weight = torch.matmul(cn_weight.view(1, -1), self.W_skipconn2odd)
-                    weighted_abs = x_output_abs * expanded_weight.view(1, 1, -1)
+            _cn_sharing = self.node_weight_sharing_config.get(NodeType.CN)
+            _ucn_sharing = self.node_weight_sharing_config.get(NodeType.UCN)
+            if _cn_sharing == 0:
+                x_output_1 = torch.abs(x_output_0)
+            elif _cn_sharing == 1:
+                if _ucn_sharing == 1:
+                    W_per_edge_1 = self.fetch_param(ParamType.Weight, NodeType.CN, curr_iter)
+                    W_per_edge_2 = self.fetch_param(ParamType.Weight, NodeType.UCN, curr_iter)
+                    x_output_11 = torch.mul(torch.abs(x_output_0), W_per_edge_1)
+                    x_output_12 = torch.mul(torch.abs(x_output_0), W_per_edge_2)
+                    x_output_1 = torch.add(torch.mul(x_output_11, SCN_idx_edge), torch.mul(x_output_12, UCN_idx_edge))
                 else:
-                    weighted_abs = x_output_abs
-            else:
-                weighted_abs = x_output_abs
-
-            # Apply UCN weight if configured
-            ucn_weight = self.fetch_param(ParamType.Weight, NodeType.UCN, curr_iter)
-            if ucn_weight is not None:
-                if ucn_weight.numel() == self.sum_edge:
-                    ucn_weighted = x_output_abs * ucn_weight.view(1, 1, -1)
-                elif ucn_weight.numel() == self.M:
-                    expanded_weight = torch.matmul(ucn_weight.view(1, -1), self.W_skipconn2odd)
-                    ucn_weighted = x_output_abs * expanded_weight.view(1, 1, -1)
+                    W_per_edge = self.fetch_param(ParamType.Weight, NodeType.CN, curr_iter)
+                    x_output_1 = torch.mul(torch.abs(x_output_0), W_per_edge)
+            elif _cn_sharing == 2:
+                if _ucn_sharing == 2:
+                    W_per_edge_1 = torch.matmul(
+                        self.fetch_param(ParamType.Weight, NodeType.CN, curr_iter).view(1, -1),
+                        self.W_skipconn2odd
+                    )
+                    W_per_edge_2 = torch.matmul(
+                        self.fetch_param(ParamType.Weight, NodeType.UCN, curr_iter).view(1, -1),
+                        self.W_skipconn2odd
+                    )
+                    x_output_11 = torch.mul(torch.abs(x_output_0))
+                    x_output_12 = torch.mul(torch.abs(x_output_0))
+                    x_output_1 = torch.add(
+                        torch.mul(x_output_11, -UCN_idx_edge + 1.0),
+                        torch.mul(x_output_12, UCN_idx_edge)
+                    )
                 else:
-                    ucn_weighted = weighted_abs
+                    W_per_edge = torch.matmul(
+                        self.fetch_param(ParamType.Weight, NodeType.CN, curr_iter).view(1, -1),
+                        self.W_skipconn2odd
+                    )
+                    x_output_1 = torch.mul(torch.abs(x_output_0), W_per_edge)  # [B, Z, E]
+            elif _cn_sharing == 3:
+                if _ucn_sharing == 3:
+                    W_per_edge_1 = torch.matmul(
+                        torch.tile(
+                            self.fetch_param(ParamType.Weight, NodeType.CN, curr_iter),
+                            [self.M]
+                        ).view(1, self.M),
+                        self.W_skipconn2odd
+                    )
+                    W_per_edge_2 = torch.matmul(
+                        torch.tile(
+                            self.fetch_param(ParamType.Weight, NodeType.UCN, curr_iter),
+                            [self.M]
+                        ).view(1, self.M),
+                        self.W_skipconn2odd
+                    )
+                    x_output_11 = torch.mul(torch.mul(torch.abs(x_output_0)), W_per_edge_1)
+                    x_output_12 = torch.mul(torch.mul(torch.abs(x_output_0)), W_per_edge_2)
+                    x_output_1 = torch.add(
+                        torch.mul(x_output_11, SCN_idx_edge),
+                        torch.mul(x_output_12, UCN_idx_edge)
+                    )
+                else:
+                    W_per_edge = torch.matmul(
+                        torch.tile(
+                            self.fetch_param(ParamType.Weight, NodeType.CN, curr_iter),
+                            [self.M]
+                        ).view(1, self.M),
+                        self.W_skipconn2odd
+                    )
+                    x_output_1 = torch.mul(torch.abs(x_output_0), W_per_edge)  # [B, Z, E]
+            elif _cn_sharing == 4:
+                if curr_iter not in fixed_iteration:
+                    W_per_edge = self.fetch_param(ParamType.Weight, NodeType.CN, curr_iter)
+                else:
+                    W_per_edge = fixed_iter_weight[fixed_iteration_index]
+                x_output_1 = torch.mul(torch.abs(x_output_0), W_per_edge)  # [B, Z, E]
 
-                # Combine CN and UCN weights based on satisfied/unsatisfied checks
-                weighted_abs = weighted_abs * SCN_idx_edge + ucn_weighted * UCN_idx_edge
+            x_output_2 = torch.mul(x_output_1, (x_output_0 >= 0).float())  # [B, Z, E]
 
-            # Apply ReLU and clipping BEFORE sign multiplication
-            weighted_abs = torch.relu(weighted_abs)
-            weighted_abs = torch.clamp(weighted_abs, 0, self.allowed_llr_range.end)
-            
-            # Apply quantization if needed
             if self.decoding_type == DecoderType.QMS:
-                weighted_abs = self._quantize_message(weighted_abs, self.decoder_qms_qbit)
+                x_output_2 = self._quantize_message(x_output_2, self.decoder_qms_qbit)
+            else:
+                x_output_2 = torch.clamp(x_output_2, self.allowed_llr_range.start, self.allowed_llr_range.end)
             
-            # Apply sign LAST (after all processing)
-            x_output_sign = torch.sign(x_output_0)
-            next_llr = weighted_abs * x_output_sign
-            
-            # Final clipping
-            next_llr = torch.clamp(next_llr, self.allowed_llr_range.start, self.allowed_llr_range.end)
+            self.llr[curr_iter + 1] = torch.mul(x_output_2, torch.sign(x_output_0))  # [B, Z, E]
+            y_output_2 = torch.matmul(self.llr[curr_iter + 1], self.W_output)  # [B, Z, N]
+            y_output_3 = y_output_2.transpose(1, 2)  # [B, N, Z]
 
-            prev_llr = next_llr
-
-            y_output = torch.matmul(next_llr, self.W_output)
-            y_output = y_output.transpose(1, 2)
-            y_output = xa + y_output
-            y_output = torch.clamp(y_output, self.allowed_llr_range.start, self.allowed_llr_range.end)
-            outputs.append(y_output.reshape(batch_size, self.N * self.Z))
+            # decision
+            if self.decoding_type == DecoderType.QMS:
+                xa = self._quantize_message(xa, self.decoder_qms_qbit)
             
-        return outputs
+            y_output_4 = torch.add(xa_input, y_output_3)  # [B, N, Z]
+            y_output_4 = torch.clamp(y_output_4, self.allowed_llr_range.start, self.allowed_llr_range.end)
+
+            self.outputs[curr_iter] = torch.reshape(
+                y_output_4,
+                (self.batch_size, self.N * self.Z)
+            )  # [B, N * Z]
+                    
+
+            # Postprocess for next iteration
+            fixed_iteration_index += 1
+
+        return self.outputs
