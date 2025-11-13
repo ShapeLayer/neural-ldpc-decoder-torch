@@ -328,8 +328,6 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                     xa_input = torch.mul(xa_input, vn_weight)
                 else:
                     xa_input = torch.mul(xa_input, fixed_iter_weight[fixed_iteration_index])
-            elif self.node_weight_sharing_config.get(NodeType.VN) == 1:
-                xa_input = torch.mul(xa_input, vn_weight)
 
             if self.decoding_type == DecoderType.QMS:
                 xa_input = self._quantize_message(xa_input, self.decoder_qms_qbit)
@@ -352,7 +350,7 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                 CN_in_sign_tile = torch.tile(CN_in_sign, (1, 1, self.sum_edge))  # [B, Z, E, E]
                 CN_in_sign_tile = torch.mul(CN_in_sign_tile, self.W_even2odd_with_self.t().reshape(-1))  # [B, Z, E, E]
                 CN_in_sign_tile = torch.reshape(CN_in_sign_tile, (self.batch_size, self.Z, self.sum_edge, self.sum_edge))
-                CN_in_sign_tile = torch.add(CN_in_sign_tile, torch.mul(1.0, torch.add(-torch.abs(CN_in_sign_tile > 0).float(), 1.0)))
+                CN_in_sign_tile = torch.add(CN_in_sign_tile, torch.mul(1.0, torch.add(1.0, -torch.abs(CN_in_sign_tile > 0).float())))
                 CN_sign_edge = torch.prod(CN_in_sign_tile, dim=3)
                 UCN_idx_edge = (CN_sign_edge < 0).float()  # [B, Z, E]
                 UCN_idx_edge = UCN_idx_edge.transpose(1, 2)  # [B, E, Z]
@@ -360,10 +358,16 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                 UCN_idx_edge = torch.matmul(UCN_idx_edge, self.Lift_Matrix2)  # [B, E * Z]
                 UCN_idx_edge = UCN_idx_edge.reshape(self.batch_size, self.sum_edge, self.Z)  # [B, E, Z]
                 UCN_idx_edge = UCN_idx_edge.transpose(1, 2)  # [B, Z, E]
-                SCN_idx_edge = torch.add(1.0, -UCN_idx_edge)  # [B, Z, E]
+                SCN_idx_edge = torch.add(
+                    -UCN_idx_edge,
+                    torch.ones((self.batch_size, self.Z, self.sum_edge), device=self.conn_mat.device, dtype=torch.float32)
+                )
             else:
                 UCN_idx_edge = torch.zeros((self.batch_size, self.Z, self.sum_edge), device=self.conn_mat.device, dtype=torch.float32)
-                SCN_idx_edge = torch.ones((self.batch_size, self.Z, self.sum_edge), device=self.conn_mat.device, dtype=torch.float32)
+                SCN_idx_edge = torch.add(
+                    -UCN_idx_edge,
+                    torch.ones((self.batch_size, self.Z, self.sum_edge), device=self.conn_mat.device, dtype=torch.float32)
+                )
 
             x0 = torch.matmul(xa_input, self.W_skipconn2even)  # [B, Z, E]
             x1 = torch.matmul(self.llr[curr_iter], self.W_odd2even)  # [B, Z, E]
@@ -402,14 +406,14 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                  self.decoding_type == DecoderType.QMS:
                 x2_abs = torch.add(
                     torch.abs(x2_1),
-                    torch.mul(10000.0, 1.0 - (x2_1 > 0).float())
+                    torch.mul(10000.0, 1.0 - (torch.abs(x2_1) > 0).float())
                 )
                 x3 = torch.min(x2_abs, dim=3)[0]  # torch.min returns (values, indices)
                 x3 = torch.add(x3, torch.mul(-0.0001, torch.add(-(x3 > 0.0001).float(), 1.0)))
                 x2_2 = torch.mul(-1.0, x2_1)
                 x4 = torch.add(
                     torch.zeros((self.batch_size, self.Z, self.sum_edge, self.sum_edge), device=self.conn_mat.device, dtype=torch.float32),
-                    torch.mul(1.0, torch.add(-(x2_2 > 0).float(), 1.0))
+                    1 - 2 * (x2_2 < 0).float()
                 )
                 x4_prod = torch.mul(-1.0, torch.prod(x4, dim=3))  # [B, Z, E]
                 x_output_0 = torch.mul(x3, torch.sign(x4_prod))
