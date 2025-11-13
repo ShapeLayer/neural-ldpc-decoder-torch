@@ -138,8 +138,11 @@ class BoostedNeuralLDPCDecoder(nn.Module):
             iterations_to_create = None
             if sharing_type in [1, 2, 3]:  # Independent weights per iteration
                 iterations_to_create = [i for i in range(self.iter_node_counts)]
-            else:
-                iterations_to_create = [self.iter_node_counts]
+            else:  # Fixed weights
+                iterations_to_create = [0]
+                if self.fixed_iterative_nodes != None:
+                    for iter_idx in self.fixed_iterative_nodes:
+                        iterations_to_create.append(iter_idx)
 
             for iteration in iterations_to_create:
                 weight_name = self._param_name(ParamType.Weight, node_type, iteration)
