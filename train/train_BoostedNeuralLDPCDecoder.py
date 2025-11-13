@@ -68,7 +68,10 @@ def print_train_progress(
     if current_batch == total_batches:
         stdout.write('\n')
 
-def train_boosted_neural_ldpc_decoder():
+def train_boosted_neural_ldpc_decoder(
+        param_train_total_epochs: int = 500,
+        param_train_is_y_all_zero: bool = False,
+):
     # Configure torch device
     device = "cpu"
     if torch.cuda.is_available():
@@ -157,8 +160,8 @@ def train_boosted_neural_ldpc_decoder():
         decay_rate=0.5,
         decay_steps=250,
     )
-    train_is_y_all_zero = False
-    train_total_epochs = 5000
+    train_is_y_all_zero = param_train_is_y_all_zero
+    train_total_epochs = param_train_total_epochs
 
     # Early stopping
     patience = 10
@@ -448,5 +451,14 @@ def train_boosted_neural_ldpc_decoder():
                 config=checkpoint_dumping_cfg
             )
 
+import argparse
+
 if __name__ == '__main__':
-    train_boosted_neural_ldpc_decoder()
+    parser = argparse.ArgumentParser(description="Train Boosted Neural LDPC Decoder")
+    parser.add_argument('--epochs', type=int, default=500, help='Total number of training epochs')
+    parser.add_argument('--y_all_zero', action='store_true', help='Use all-zero codewords for training')
+    args = parser.parse_args()
+    train_boosted_neural_ldpc_decoder(
+        param_train_total_epochs=args.epochs,
+        param_train_is_y_all_zero=args.y_all_zero
+    )
