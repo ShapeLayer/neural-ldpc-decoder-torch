@@ -1,6 +1,8 @@
+from typing import Optional
 import torch
 import torch.nn as nn
-
+from boosted_neural_ldpc_decoder.struct.LossType import LossType
+from boosted_neural_ldpc_decoder.Functions import Functions
 
 class LDPCDecoderLoss(nn.Module):
     """
@@ -12,13 +14,8 @@ class LDPCDecoderLoss(nn.Module):
 
     def __init__(
             self, 
-            loss_type: int = 0,
+            loss_type: LossType = LossType.BCE,
             etha: float = 1.0,
-            training_iter_start: int = 0,
-            training_iter_end: int = 1,
-            fixed_init: int = 0,
-            fixed_iter: int = 0,
-            frame_penalty_weight: float = 0.5,
     ):
         """
         Initialize loss function
@@ -33,90 +30,79 @@ class LDPCDecoderLoss(nn.Module):
             training_iter_end: End iteration for training
             fixed_init: Fixed initialization iterations (Delta_2)
             fixed_iter: Fixed iterations before training starts
-            frame_penalty_weight: Weight for frame error penalty in loss
         """
         super(LDPCDecoderLoss, self).__init__()
         self.loss_type = loss_type
         self.etha = etha
-        self.training_iter_start = training_iter_start
-        self.training_iter_end = training_iter_end
-        self.fixed_init = fixed_init
-        self.fixed_iter = fixed_iter
-        self.frame_penalty_weight = frame_penalty_weight
 
-    def forward(self, outputs: list, targets: torch.Tensor) -> torch.Tensor:
-        """
-        Compute weighted loss across multiple decoder iterations
+    def forward(
+            self,
+            outputs: Optional[list | torch.Tensor],
+            expected: Optional[list | torch.Tensor],
+            coeff_param: Optional[list | int] = 1,
+        ) -> torch.Tensor:
+        # Available Cases in outputs and expected:
+        is_valid = 0
+        # 1. outputs: torch.Tensor, expected: torch.Tensor
+        if is_valid == 0 and (isinstance(outputs, torch.Tensor) and isinstance(expected, torch.Tensor)):
+            is_valid = 1
+        # 2. outputs: list of torch.Tensor, expected: torch.Tensor
+        if is_valid == 0 and (isinstance(outputs, list) and isinstance(expected, torch.Tensor)):
+            is_valid = 2
+        # 3. outputs: list of torch.Tensor, expected: list of torch.Tensor
+        if not is_valid and isinstance(outputs, list) and isinstance(expected, list):
+            if len(outputs) == len(expected):
+                is_valid = 3
+        if is_valid == 0:
+            raise ValueError("Invalid types for outputs and expected in LDPCDecoderLoss. Outputs must be either a torch.Tensor or a list of torch.Tensor. expected must be either a torch.Tensor or a list of torch.Tensor with matching length to outputs.")
         
-        Args:
-            outputs: List of decoder outputs from each iteration [iter][batch, N*Z]
-            targets: Target codeword bits [batch, N*Z]
-            
-        Returns:
-            Weighted average loss across iterations
-        """
-        if not isinstance(outputs, list):
-            raise ValueError("outputs must be a list of tensors from each iteration")
-        
-        # Determine iteration range
-        start_t = self.training_iter_end - 1
-        end_t = max(self.training_iter_start - self.fixed_init, self.fixed_iter) - 1
-        
-        loss_sum = 0.0
-        weight_sum = 0.0
-        
-        # Iterate backwards from most recent to earliest iteration
-        for t in range(start_t, end_t, -1):
-            if t >= len(outputs):
-                continue
-                
-            x_temp = outputs[t]  # [batch, N*Z]
-            
-            # Compute iteration weight
-            iter_weight = self.etha ** (self.training_iter_end - 1 - t)
-            
-            if self.loss_type == 0:  # BCE with logits
-                # Compute bit-level BCE loss
-                bit_loss = nn.functional.binary_cross_entropy_with_logits(
-                    -x_temp,
-                    targets,
-                    reduction='none'
-                )  # [batch, N*Z]
-                
-                # Compute frame-level loss
-                frame_loss = torch.mean(bit_loss, dim=1)  # [batch]
-                
-                # Check if frame has errors
-                hard_decisions = (x_temp < 0).float()
-                frame_errors = torch.any(hard_decisions != targets, dim=1).float()  # [batch]
-                
-                iter_loss = frame_loss + self.frame_penalty_weight * frame_errors
-                
-            elif self.loss_type == 1:  # Soft BER
-                iter_loss = torch.mean(torch.sigmoid(x_temp), dim=1)  # [batch]
-                
-            elif self.loss_type == 2:  # FER
-                min_llr = torch.min(-x_temp, dim=1)[0]  # [batch]
-                
-                sign_val = torch.sign(min_llr)
-                approx = self._inv_exp(min_llr)
-                sign_through = approx + (sign_val - approx).detach()
-                
-                iter_loss = 0.5 * (1.0 - sign_through)  # [batch]
-            else:
-                raise ValueError(f"Unsupported loss_type: {self.loss_type}")
+        # Validate Coeff Param used in weighting loss across iterations
+        if is_valid == 1:
+            if not isinstance(coeff_param, int):
+                raise ValueError("Invalid coeff_param provided to LDPCDecoderLoss. Must be an integer when outputs is a single torch.Tensor.")
+        else:
+            if not (
+                (isinstance(coeff_param, list) and len(coeff_param) == len(outputs)),
+                isinstance(coeff_param, int)
+            ):
+                raise ValueError("Invalid coeff_param provided to LDPCDecoderLoss. Must be either a list of integers matching outputs length or a single integer.")
 
-            # Accumulate weighted loss
-            loss_sum = loss_sum + iter_weight * iter_loss
-            weight_sum = weight_sum + iter_weight
+        loss_ftn = 0
+        _coeff = 0
         
-        # Normalize by sum of weights
-        loss_ftn = loss_sum / weight_sum if weight_sum > 0 else loss_sum
-        
-        # Take mean across batch
-        return torch.mean(loss_ftn)
+        for curr_iter in range(
+            len(outputs) if is_valid != 1 else 1
+        ):
+            now_actual = outputs[curr_iter] if is_valid != 1 else outputs
+            now_expect = expected[curr_iter] if is_valid == 3 else expected
+            now_coeff = 1
+            if coeff_param is not None:
+                now_coeff = coeff_param[curr_iter] if isinstance(coeff_param, list) else coeff_param
 
-    @staticmethod
-    def _inv_exp(x: torch.Tensor) -> torch.Tensor:
-        """Inverse exponential approximation for sign function"""
-        return 2.0 / (1.0 + torch.exp(-x)) - 1.0
+            if self.loss_type == LossType.BCE:
+                loss_ftn = loss_ftn + pow(
+                    self.etha,
+                    now_coeff
+                ) * nn.functional.binary_cross_entropy_with_logits(
+                    now_actual,  # logits
+                    now_expect,  # labels
+                )
+            elif self.loss_type == LossType.SoftBEROnAllZero:
+                loss_ftn = loss_ftn + pow(
+                    self.etha,
+                    now_coeff
+                ) * torch.sigmoid(now_actual)
+            elif self.loss_type == LossType.FEROnAllZero:
+                _now_actual = 1 / 2 * (1 - Functions.sign_through_torch(torch.min(-now_actual, dim=1)[0]))
+                loss_ftn = loss_ftn + pow(
+                    self.etha,
+                    now_coeff
+                ) * _now_actual
+            
+            _coeff = _coeff + pow(
+                self.etha,
+                now_coeff
+            )
+
+        loss_ftn = loss_ftn / _coeff if _coeff > 0 else loss_ftn
+        return 1.0 * loss_ftn.mean()

@@ -79,49 +79,59 @@ class AWGNPassedDatagen:
             is_y_all_zero: bool = True,
             decoding_type: DecoderType = DecoderType.MS,
             decoder_qms_qbit: int = 5
-    ) -> tuple[list[ndarray[tuple[Any, ...], dtype[Any]]], list[ndarray[tuple[Any, ...], dtype[Any]]]]:
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Generate data with all samples at the same SNR for each batch."""
         if word_length <= 0:
             raise ValueError("word_length must be positive integer")
 
-        x: list[np.ndarray] = []
-        y: list[np.ndarray] = []
+        X = np.zeros([1, self.N * Z], dtype=self.x_dtype)
+        Y = np.zeros([1, self.N * Z], dtype=self.y_dtype)
 
-        gen_x = self._gen_x
-        gen_y = self._gen_y_all_zero if is_y_all_zero else self._gen_y_wordgen
-
+        curr_batch_size = 0
+        
         for each_sf in self.snr_sigma:
-            y_i = gen_y(word_length, Z)
+            while curr_batch_size < word_length:
+                # Generate codeword
+                Y_i = self._gen_y(1, Z, is_y_all_zero)
+                
+                # BPSK modulation: 0 → +1, 1 → -1
+                # Original: (-1) ** (1 - Y_i) = (-1)^1 for Y_i=0 → -1, (-1)^0 for Y_i=1 → +1
+                # Which means: bit 0 → -1, bit 1 → +1 (inverted from typical)
+                noise = self._awgn_noise_random.normal(0.0, 1.0, Y_i.shape)
+                X_p_i = noise * each_sf + (-1) ** (1 - Y_i)
+                
+                x_llr_i = 2 * X_p_i / (each_sf ** 2)
 
-            # BPSK modulation: bit 0 → +1, bit 1 → -1
-            # transmitted = 1 - 2*y_i maps {0,1} to {+1,-1}
-            transmitted = 1 - 2 * y_i
-            
-            # Add AWGN noise: received = transmitted + noise
-            noise = gen_x(word_length) * each_sf
-            x_p_i = transmitted + noise
-            
-            # Compute LLR: positive LLR indicates bit=0
-            x_llr_i = 2 * x_p_i / (each_sf ** 2)
+                # Apply quantization for QMS
+                if decoding_type == DecoderType.QMS:
+                    x_llr_i = Functions.Cal_MSA_Q(x_llr_i, decoder_qms_qbit)
 
-            # Puncturing
-            if self.puncturing.start > 0:
-                if decoding_type == DecoderType.SP:
-                    x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = .001
-                else:
-                    x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = 0
+                # Puncturing
+                if self.puncturing.start > 0:
+                    if decoding_type == DecoderType.SP:
+                        x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = 0.001
+                    else:
+                        x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = 0
 
-            # Shortening
-            if self.shortening.start > 0:
-                x_llr_i[0, self.shortening.start - 1:self.shortening.end] = self.allowed_llr_range.start
+                # Shortening
+                if self.shortening.start > 0:
+                    x_llr_i[0, self.shortening.start - 1:self.shortening.end] = -self.allowed_llr_range.abs
 
-            if decoding_type == DecoderType.QMS:
-                x_llr_i = Functions.Cal_MSA_Q(x_llr_i, decoder_qms_qbit)
-            x_llr_i = x_llr_i.astype(self.x_dtype)
+                X = np.vstack((X, x_llr_i))
+                Y = np.vstack((Y, Y_i))
+                curr_batch_size += 1
+                
+                if curr_batch_size == word_length:
+                    break
 
-            x.append(x_llr_i)
-            y.append(y_i)
-
-        return x, y
+        # Remove the initial zero row
+        X = X[1:]
+        Y = Y[1:]
+        
+        # Reshape to [batch_size, N, Z]
+        X = np.reshape(X, [word_length, self.N, Z])
+        
+        return X, Y
 
     def _gendata_mixed(
             self,
@@ -131,69 +141,63 @@ class AWGNPassedDatagen:
             decoding_type: DecoderType = DecoderType.MS,
             decoder_qms_qbit: int = 5
     ) -> tuple[np.ndarray, np.ndarray]:
+        """Generate data with mixed SNR values across the batch."""
         if word_length <= 0:
             raise ValueError("word_length must be positive integer")
 
-        x_mixed = []
-        y_mixed = []
-
-        gen_x = self._gen_x
-        gen_y = self._gen_y_all_zero if is_y_all_zero else self._gen_y_wordgen
+        X = np.zeros([1, self.N * Z], dtype=self.x_dtype)
+        Y = np.zeros([1, self.N * Z], dtype=self.y_dtype)
 
         curr_batch_size = 0
-        snr_idx = 0
         
         while curr_batch_size < word_length:
-            each_sf = self.snr_sigma[snr_idx % len(self.snr_sigma)]
-            
-            # Generate 1 sample at this SNR
-            y_i = gen_y(1, Z)
-            
-            # BPSK modulation: bit 0 → +1, bit 1 → -1
-            transmitted = 1 - 2 * y_i
-            
-            # Add AWGN noise
-            noise = gen_x(1) * each_sf
-            x_p_i = transmitted + noise
-            
-            # Compute LLR
-            x_llr_i = 2 * x_p_i / (each_sf ** 2)
+            for each_sf in self.snr_sigma:
+                # Generate codeword
+                Y_i = self._gen_y(1, Z, is_y_all_zero)
+                
+                # BPSK modulation with AWGN
+                noise = self._awgn_noise_random.normal(0.0, 1.0, Y_i.shape)
+                X_p_i = noise * each_sf + (-1) ** (1 - Y_i)
+                
+                x_llr_i = 2 * X_p_i / (each_sf ** 2)
 
-            # Puncturing
-            if self.puncturing.start > 0:
-                if decoding_type == DecoderType.SP:
-                    x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = .001
-                else:
-                    x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = 0
+                # Apply quantization for QMS
+                if decoding_type == DecoderType.QMS:
+                    x_llr_i = Functions.Cal_MSA_Q(x_llr_i, decoder_qms_qbit)
 
-            # Shortening
-            if self.shortening.start > 0:
-                x_llr_i[0, self.shortening.start - 1:self.shortening.end] = self.allowed_llr_range.start
+                # Puncturing
+                if self.puncturing.start > 0:
+                    if decoding_type == DecoderType.SP:
+                        x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = 0.001
+                    else:
+                        x_llr_i[0, self.puncturing.start - 1:self.puncturing.end] = 0
 
-            if decoding_type == DecoderType.QMS:
-                x_llr_i = Functions.Cal_MSA_Q(x_llr_i, decoder_qms_qbit)
-            
-            x_mixed.append(x_llr_i.astype(self.x_dtype))
-            y_mixed.append(y_i.astype(self.y_dtype))
-            
-            snr_idx += 1
-            curr_batch_size += 1
+                # Shortening
+                if self.shortening.start > 0:
+                    x_llr_i[0, self.shortening.start - 1:self.shortening.end] = -self.allowed_llr_range.abs
 
-        return np.concatenate(x_mixed, axis=0), np.concatenate(y_mixed, axis=0)
+                X = np.vstack((X, x_llr_i))
+                Y = np.vstack((Y, Y_i))
+                curr_batch_size += 1
+                
+                if curr_batch_size == word_length:
+                    break
 
-    def _gen_x(self, word_length: int) -> np.ndarray:
-        return self._awgn_noise_random.normal(0., 1., size=(word_length, self.gen_matrix.shape[1])).astype(self.x_dtype)
+        # Remove the initial zero row
+        X = X[1:]
+        Y = Y[1:]
+        
+        # Reshape to [batch_size, N, Z]
+        X = np.reshape(X, [word_length, self.N, Z])
+        
+        return X, Y
 
-    def _gen_y_all_zero(self, word_length: int, Z: int) -> np.ndarray:
-        return np.dot(
-            np.zeros(shape=(word_length, self.K * Z), dtype=self.y_dtype),
-            self.gen_matrix
-        ) % 2
-
-    def _gen_y_wordgen(self, word_length: int, Z: int) -> np.ndarray:
-        if self.gen_matrix is None:
-            raise ValueError("self.gen_matrix must be provided when is_y_all_zero is False")
-        return np.dot(
-            self._wordgen_random.randint(0, 2, size=(word_length, self.K * Z)).astype(self.y_dtype),
-            self.gen_matrix
-        ) % 2
+    def _gen_y(self, word_length: int, Z: int, is_y_all_zero: bool) -> np.ndarray:
+        """Generate codeword (all-zero or random)."""
+        if is_y_all_zero:
+            return np.zeros([word_length, self.N * Z], dtype=self.y_dtype)
+        else:
+            if self.gen_matrix is None:
+                raise ValueError("gen_matrix must be provided when is_y_all_zero is False")
+            infoWord = self._wordgen_random.randint(0, 2, size=(word_length, self.K * Z))
+            return np.dot(infoWord, self.gen_matrix) % 2

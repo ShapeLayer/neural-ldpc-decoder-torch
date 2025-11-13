@@ -11,6 +11,7 @@ from boosted_neural_ldpc_decoder.struct.Clipping import Clipping
 from boosted_neural_ldpc_decoder.struct.DecoderType import DecoderType
 from boosted_neural_ldpc_decoder.LDPCDecoderLoss import LDPCDecoderLoss
 from boosted_neural_ldpc_decoder.struct.LearningRate import LearningRate
+from boosted_neural_ldpc_decoder.struct.LossType import LossType
 from boosted_neural_ldpc_decoder.struct.NodeWeightSharingConfig import NodeWeightSharingConfig
 from boosted_neural_ldpc_decoder.struct.Puncture import Puncture
 from boosted_neural_ldpc_decoder.struct.Shortening import Shortening
@@ -67,7 +68,10 @@ def print_train_progress(
     if current_batch == total_batches:
         stdout.write('\n')
 
-def train_boosted_neural_ldpc_decoder():
+def train_boosted_neural_ldpc_decoder(
+        param_train_total_epochs: int = 500,
+        param_train_is_y_all_zero: bool = False,
+):
     # Configure torch device
     device = "cpu"
     if torch.cuda.is_available():
@@ -88,6 +92,10 @@ def train_boosted_neural_ldpc_decoder():
     basegraph = np.loadtxt("resources/basegraph2_set0.txt", int, delimiter="\t")
     genmatrix = np.loadtxt("resources/gen_matrix_bg2_z16.txt", int, delimiter=",")
     Z = 16
+
+    # basegraph = np.loadtxt("resources/wman_N0576_R34_z24.txt", int, delimiter="\t")
+    # genmatrix = None
+    # Z = 24
 
     # Initialize connecting matrix
     """
@@ -145,15 +153,15 @@ def train_boosted_neural_ldpc_decoder():
     validate_word_input_length = 1000
 
     # Training
-    loss_type = 0  # 0: BCE (works for zero and non-zero), 1: Soft BER (zero only), 2: FER (zero only)
+    loss_type = LossType.BCE
     etha_init = 1.0  # Exponential weighting: 0=last iter only, 1.0=equal weight, >1=favor early iters
     learning_rate = LearningRate(
         initial_lr=0.01,
         decay_rate=0.5,
         decay_steps=250,
     )
-    train_is_y_all_zero = False
-    train_total_epochs = 5000
+    train_is_y_all_zero = param_train_is_y_all_zero
+    train_total_epochs = param_train_total_epochs
 
     # Early stopping
     patience = 10
@@ -218,11 +226,6 @@ def train_boosted_neural_ldpc_decoder():
     criterion = LDPCDecoderLoss(
         loss_type=loss_type,
         etha=etha_init,
-        training_iter_start=training_iter_start,
-        training_iter_end=training_iter_end,
-        fixed_init=fixed_init,
-        fixed_iter=fixed_iter,
-        frame_penalty_weight=0.5,
     )
 
     optimizer = optim.Adam(model.get_trainable_parameters(), lr=learning_rate())
@@ -247,6 +250,7 @@ def train_boosted_neural_ldpc_decoder():
         epoch_loss = 0.0
 
         current_lr = learning_rate.lr
+
         if epoch > 0:
             current_lr = learning_rate()
             for param_group in optimizer.param_groups:
@@ -266,21 +270,28 @@ def train_boosted_neural_ldpc_decoder():
                 x_i = torch.tensor(x_i, dtype=torch.float32, device=device)
                 y_i = torch.tensor(y_i, dtype=torch.float32, device=device)
                 
-                # Forward pass
                 model.train()
-                outputs = model(x_i)
-                
-                # Compute loss
-                loss = criterion(outputs, y_i)
-                
-                # Backward pass
                 optimizer.zero_grad()
-                loss.backward()
+                
+                # NOTE: Single forward pass through ALL iterations with this batch's data
+                all_outputs = model(
+                    x_i,  # Same x_i for all iterations
+                    target_iter=list(range(training_iter_start, training_iter_end))
+                )
+                
+                # Compute loss on all iteration outputs
+                total_loss = criterion(
+                    all_outputs,
+                    y_i,
+                    coeff_param=list(range(len(all_outputs)))
+                )
+                
+                # Single backward pass propagates gradients through ALL iterations
+                total_loss.backward()
                 optimizer.step()
-
                 model._apply_constraints()
                 
-                epoch_loss += loss.item()
+                epoch_loss += total_loss.item()
 
                 if batch_idx % train_progress_inform_step == 0:
                     print_train_progress(
@@ -288,17 +299,17 @@ def train_boosted_neural_ldpc_decoder():
                         total_batches=training_batch_size,
                         current_epoch=epoch,
                         total_epochs=train_total_epochs,
-                        loss=loss.item(),
+                        loss=total_loss.item(),
                         start_time=training_start_time
                     )
             
             if training_batch_size > 0:
                 print_train_progress(
-                    current_batch=batch_idx + 1,
+                    current_batch=training_batch_size,
                     total_batches=training_batch_size,
                     current_epoch=epoch,
                     total_epochs=train_total_epochs,
-                    loss=loss.item(),
+                    loss=total_loss.item(),
                     start_time=training_start_time
                 )
 
@@ -310,7 +321,7 @@ def train_boosted_neural_ldpc_decoder():
             print(f"Training iter range: [{training_iter_start}, {training_iter_end})")
             print(f"Average training loss: {avg_epoch_loss:.6f}")
             print(f"{'='* 60}\n")
-        
+                
         # Validation
         if epoch % validate_epoch_step == 0:
             model.eval()
@@ -440,5 +451,14 @@ def train_boosted_neural_ldpc_decoder():
                 config=checkpoint_dumping_cfg
             )
 
+import argparse
+
 if __name__ == '__main__':
-    train_boosted_neural_ldpc_decoder()
+    parser = argparse.ArgumentParser(description="Train Boosted Neural LDPC Decoder")
+    parser.add_argument('--epochs', type=int, default=500, help='Total number of training epochs')
+    parser.add_argument('--y_all_zero', action='store_true', help='Use all-zero codewords for training')
+    args = parser.parse_args()
+    train_boosted_neural_ldpc_decoder(
+        param_train_total_epochs=args.epochs,
+        param_train_is_y_all_zero=args.y_all_zero
+    )
