@@ -173,7 +173,7 @@ def train_boosted_neural_ldpc_decoder(
     # Setting checkpoint_step and log_metrics_step into multiple of validate_epoch step is recommended.
     validate_epoch_step = 25
     checkpoint_step = validate_epoch_step * 2
-    log_metrics_step = validate_epoch_step
+    log_metrics_step = 5
     train_progress_inform_step = 10
 
     # Training iteration parameters
