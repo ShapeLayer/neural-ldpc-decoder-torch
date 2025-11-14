@@ -246,6 +246,7 @@ def train_boosted_neural_ldpc_decoder(
     # Training Loop
     training_start_time = datetime.now().timestamp()
     
+    avg_epoch_loss = 0.0
     for epoch in range(train_total_epochs + 1):
         epoch_loss = 0.0
 
@@ -417,10 +418,13 @@ def train_boosted_neural_ldpc_decoder(
         # but if validation is not executed in these loop,
         # metrics dictionary refers legacy metrics
         metrics = {
-            'loss': avg_valid_loss,
+            'loss': avg_epoch_loss,
             'ber_last_iter': last_iter_ber,
             'fer_last_iter': last_iter_fer,
         }
+        if epoch % validate_epoch_step == 0:
+            metrics['loss'] = avg_valid_loss
+            
         checkpoint_dumping_cfg = { "batch_size": batch_size, "lr": current_lr }
         checkpoint_filename = "NA"
 
