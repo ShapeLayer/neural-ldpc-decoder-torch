@@ -173,7 +173,7 @@ def train_boosted_neural_ldpc_decoder(
     # Setting checkpoint_step and log_metrics_step into multiple of validate_epoch step is recommended.
     validate_epoch_step = 25
     checkpoint_step = validate_epoch_step * 2
-    log_metrics_step = validate_epoch_step
+    log_metrics_step = 5
     train_progress_inform_step = 10
 
     # Training iteration parameters
@@ -246,6 +246,7 @@ def train_boosted_neural_ldpc_decoder(
     # Training Loop
     training_start_time = datetime.now().timestamp()
     
+    avg_epoch_loss = 0.0
     for epoch in range(train_total_epochs + 1):
         epoch_loss = 0.0
 
@@ -417,10 +418,13 @@ def train_boosted_neural_ldpc_decoder(
         # but if validation is not executed in these loop,
         # metrics dictionary refers legacy metrics
         metrics = {
-            'loss': avg_valid_loss,
+            'loss': avg_epoch_loss,
             'ber_last_iter': last_iter_ber,
             'fer_last_iter': last_iter_fer,
         }
+        if epoch % validate_epoch_step == 0:
+            metrics['loss'] = avg_valid_loss
+            
         checkpoint_dumping_cfg = { "batch_size": batch_size, "lr": current_lr }
         checkpoint_filename = "NA"
 
