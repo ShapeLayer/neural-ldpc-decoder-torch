@@ -353,7 +353,7 @@ class BoostedNeuralLDPCDecoder(nn.Module):
                 CN_in_sign_tile = torch.tile(CN_in_sign, (1, 1, self.sum_edge))  # [B, Z, E, E]
                 CN_in_sign_tile = torch.mul(CN_in_sign_tile, self.W_even2odd_with_self.t().reshape(-1))  # [B, Z, E, E]
                 CN_in_sign_tile = torch.reshape(CN_in_sign_tile, (self.batch_size, self.Z, self.sum_edge, self.sum_edge))
-                CN_in_sign_tile = torch.add(CN_in_sign_tile, torch.mul(1.0, torch.add(1.0, -torch.abs(CN_in_sign_tile > 0).float())))
+                CN_in_sign_tile = torch.add(CN_in_sign_tile, 1.0 * (1 - (torch.abs(CN_in_sign_tile) > 0).float()))
                 CN_sign_edge = torch.prod(CN_in_sign_tile, dim=3)
                 UCN_idx_edge = (CN_sign_edge < 0).float()  # [B, Z, E]
                 UCN_idx_edge = UCN_idx_edge.transpose(1, 2)  # [B, E, Z]
@@ -378,7 +378,7 @@ class BoostedNeuralLDPCDecoder(nn.Module):
 
             x2 = x2.transpose(1, 2)  # [B, E, Z]
             x2 = x2.reshape(self.batch_size, self.sum_edge * self.Z)  # [B, E * Z]
-            x2 = torch.matmul(x2, self.conn_mat.lifting_matrix_1.t())  # [B, E * Z]
+            x2 = torch.matmul(x2, self.Lift_Matrix1.t())  # [B, E * Z]
             x2 = x2.reshape(self.batch_size, self.sum_edge, self.Z)  # [B, E, Z]
             x2 = x2.transpose(1, 2)  # [B, Z, E]
 
@@ -399,7 +399,7 @@ class BoostedNeuralLDPCDecoder(nn.Module):
             if self.decoding_type == DecoderType.SP:
                 # Sum-product operations
                 x2_tanh = torch.tanh(torch.mul(-0.5, x2_1))
-                x2_abs = torch.add(x2_tanh, torch.mul(1.0 - torch.abs(x2_tanh > 0).float(), 1.0))
+                x2_abs = torch.add(x2_tanh, 1 - (torch.abs(x2_tanh) > 0).float())
                 x3 = torch.prod(x2_abs, dim=3)  # [B, Z, E]
 
                 epsilon = 1e-7
