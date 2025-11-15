@@ -78,9 +78,11 @@ class AWGNPassedDatagen:
             Z: int,
             is_y_all_zero: bool = True,
             decoding_type: DecoderType = DecoderType.MS,
-            decoder_qms_qbit: int = 5
+            decoder_qms_qbit: int = 5,
+            snr_idx: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Generate data with all samples at the same SNR for each batch."""
+        """Generate data with all samples at the same SNR for each batch.
+           If snr_idx is provided, use only that SNR (single value)."""
         if word_length <= 0:
             raise ValueError("word_length must be positive integer")
 
@@ -88,8 +90,16 @@ class AWGNPassedDatagen:
         Y = np.zeros([1, self.N * Z], dtype=self.y_dtype)
 
         curr_batch_size = 0
+
+        # choose sigma list: either single SNR (by index) or all SNRs
+        if snr_idx is None:
+            sigma_list = self.snr_sigma
+        else:
+            if snr_idx < 0 or snr_idx >= len(self.snr_sigma):
+                raise IndexError("snr_idx out of range")
+            sigma_list = [self.snr_sigma[snr_idx]]
         
-        for each_sf in self.snr_sigma:
+        for each_sf in sigma_list:
             while curr_batch_size < word_length:
                 # Generate codeword
                 Y_i = self._gen_y(1, Z, is_y_all_zero)
