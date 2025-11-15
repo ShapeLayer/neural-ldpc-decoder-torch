@@ -240,8 +240,10 @@ def train_boosted_neural_ldpc_decoder(
 
     # Metrics: define variables that used when validating previously
     avg_valid_loss = 0
-    last_iter_ber = 0
-    last_iter_fer = 0
+    last_iter_ber = np.zeros(len(snr_matrix))
+    last_iter_fer = np.zeros(len(snr_matrix))
+    ber = np.zeros(len(snr_matrix))
+    fer = np.zeros(len(snr_matrix))
     
     # Training Loop
     training_start_time = datetime.now().timestamp()
@@ -329,99 +331,108 @@ def train_boosted_neural_ldpc_decoder(
             model.eval()
             
             with torch.no_grad():
+                num_snr = len(snr_matrix)
                 valid_batch_size = floor(validate_word_input_length / batch_size)
                 valid_loss = 0.0
                 
-                # BER/FER tracking
-                total_bits = 0
-                total_bit_errors = 0
-                total_frames = 0
-                total_frame_errors = 0
-                last_iter_total_bits = 0
-                last_iter_total_bit_errors = 0
-                last_iter_total_frames = 0
-                last_iter_total_frame_errors = 0
+                # per-SNR accumulators
+                per_snr_bit_errors = None
+                per_snr_frame_errors = None
+                per_snr_bits = np.zeros(num_snr, dtype=np.int64)
+                per_snr_frames = np.zeros(num_snr, dtype=np.int64)
                 
-                for batch_idx in range(valid_batch_size):
-                    x_i, y_i = datagen(
-                        gentype="mix_snr",
-                        word_length=batch_size,
-                        Z=Z,
-                        is_y_all_zero=train_is_y_all_zero,
-                        decoding_type=decoding_type,
-                        decoder_qms_qbit=decoder_qms_qbit,
-                    )
-                    
-                    x_i = np.reshape(x_i, [batch_size, N, Z])
-                    x_i = torch.tensor(x_i, dtype=torch.float32, device=device)
-                    y_i = torch.tensor(y_i, dtype=torch.float32, device=device)
-                    
-                    outputs = model(x_i)
-                    loss = criterion(outputs, y_i)
-                    valid_loss += loss.item()
-                    
-                    (bit_errors, bits), (frame_errors, frames) = Functions.evaluate_ber_fer(y_i, outputs)
-                    
-                    if batch_idx == 0:
-                        per_iter_ber = [be / bits for be in bit_errors]
-                        per_iter_fer = [fe / frames for fe in frame_errors]
-                        print(f">>> Per-Iteration Performance (First Validation Batch):")
-                        best_ber_idx = per_iter_ber.index(min(per_iter_ber))
-                        for i, (b, f) in enumerate(zip(per_iter_ber, per_iter_fer)):
-                            marker = " ← BEST BER" if i == best_ber_idx else ""
-                            print(f"    Iter {i:2d}: BER={b:.6e}, FER={f:.4f}{marker}")
-                        print()
-
-                    total_bit_errors += sum(bit_errors)
-                    total_bits += bits * len(bit_errors)
-                    total_frame_errors += sum(frame_errors)
-                    total_frames += frames * len(frame_errors)
-
-                    last_iter_total_bit_errors += bit_errors[-1]
-                    last_iter_total_bits += bits
-                    last_iter_total_frame_errors += frame_errors[-1]
-                    last_iter_total_frames += frames
+                for s_idx in range(num_snr):
+                    for batch_idx in range(valid_batch_size):
+                        x_i, y_i = datagen(
+                            gentype="per_snr",
+                            word_length=batch_size,
+                            Z=Z,
+                            is_y_all_zero=train_is_y_all_zero,
+                            decoding_type=decoding_type,
+                            decoder_qms_qbit=decoder_qms_qbit,
+                            snr_idx=s_idx,
+                        )
+                        
+                        x_i = np.reshape(x_i, [batch_size, N, Z])
+                        x_i = torch.tensor(x_i, dtype=torch.float32, device=device)
+                        y_i = torch.tensor(y_i, dtype=torch.float32, device=device)
+                        
+                        outputs = model(x_i)
+                        loss = criterion(outputs, y_i)
+                        valid_loss += loss.item()
+                        
+                        (bit_errors, bits), (frame_errors, frames) = Functions.evaluate_ber_fer(y_i, outputs)
+                        
+                        iter_count = len(bit_errors)
+                        # initialize accumulators once we know iteration count
+                        if per_snr_bit_errors is None:
+                            per_snr_bit_errors = np.zeros((num_snr, iter_count), dtype=np.int64)
+                            per_snr_frame_errors = np.zeros((num_snr, iter_count), dtype=np.int64)
+                        
+                        per_snr_bit_errors[s_idx, :iter_count] += np.array(bit_errors, dtype=np.int64)
+                        per_snr_frame_errors[s_idx, :iter_count] += np.array(frame_errors, dtype=np.int64)
+                        per_snr_bits[s_idx] += bits
+                        per_snr_frames[s_idx] += frames
+                        
+                        # print per-iteration perf for first SNR and first batch only
+                        if s_idx == 0 and batch_idx == 0:
+                            per_iter_ber = per_snr_bit_errors[0, :iter_count] / per_snr_bits[0]
+                            per_iter_fer = per_snr_frame_errors[0, :iter_count] / per_snr_frames[0]
+                            print(f">>> Per-Iteration Performance (First Validation Batch, SNR={snr_matrix[0]} dB):")
+                            best_ber_idx = int(np.argmin(per_iter_ber))
+                            for i, (b, f) in enumerate(zip(per_iter_ber, per_iter_fer)):
+                                marker = " ← BEST BER" if i == best_ber_idx else ""
+                                print(f"    Iter {i:2d}: BER={b:.6e}, FER={f:.4f}{marker}")
+                            print()
                 
-                avg_valid_loss = valid_loss / valid_batch_size
-                ber = total_bit_errors / total_bits if total_bits > 0 else 0
-                fer = total_frame_errors / total_frames if total_frames > 0 else 0
-                last_iter_ber = last_iter_total_bit_errors / last_iter_total_bits if last_iter_total_bits > 0 else 0
-                last_iter_fer = last_iter_total_frame_errors / last_iter_total_frames if last_iter_total_frames > 0 else 0
-
+                avg_valid_loss = valid_loss / (valid_batch_size * num_snr) if (valid_batch_size * num_snr) > 0 else 0.0
+                
+                # compute metrics per SNR
+                iter_count = per_snr_bit_errors.shape[1]
+                per_snr_ber_per_iter = per_snr_bit_errors / per_snr_bits[:, None]   # shape (num_snr, iter_count)
+                per_snr_fer_per_iter = per_snr_frame_errors / per_snr_frames[:, None]
+                
+                # last-iteration metrics per SNR
+                per_snr_last_ber = per_snr_ber_per_iter[:, -1]
+                per_snr_last_fer = per_snr_fer_per_iter[:, -1]
+                
+                # entire-iterations metrics per SNR (sum errors across iterations / sum bits across iterations)
+                per_snr_entire_ber = per_snr_bit_errors.sum(axis=1) / (per_snr_bits * iter_count)
+                per_snr_entire_fer = per_snr_frame_errors.sum(axis=1) / (per_snr_frames * iter_count)
+                
+                # print summary arrays (matching original style)
                 stdout.write('\n')
                 stdout.flush()
                 print(f">>> Validation Results (Epoch {epoch})")
                 print(f">>> Learning rate: {current_lr:.6e}")
                 print(f">>> Validation loss: {avg_valid_loss:.6f}")
-                print(f">>> BER(entire iter): {ber:.6e} ({total_bit_errors:.0f}/{total_bits})")
-                print(f">>> FER(entire iter): {fer:.6f} ({total_frame_errors:.0f}/{total_frames})")
-                print(f">>> BER(last iter): {last_iter_ber:.6e} ({last_iter_total_bit_errors:.0f}/{last_iter_total_bits})")
-                print(f">>> FER(last iter): {last_iter_fer:.6f} ({last_iter_total_frame_errors:.0f}/{last_iter_total_frames})")
+                print(f">>> BER_last (per SNR): {list(map(lambda x: f'{x:.2e}', per_snr_last_ber))}")
+                print(f">>> FER_last (per SNR): {list(map(lambda x: f'{x:.2e}', per_snr_last_fer))}")
+                print(f">>> BER_entire_iter (per SNR): {list(map(lambda x: f'{x:.2e}', per_snr_entire_ber))}")
+                print(f">>> FER_entire_iter (per SNR): {list(map(lambda x: f'{x:.2e}', per_snr_entire_fer))}")
                 print()
+                
+                # set exported variables for logging/checkpoint
+                ber = per_snr_entire_ber
+                fer = per_snr_entire_fer
+                last_iter_ber = per_snr_last_ber
+                last_iter_fer = per_snr_last_fer
 
                 if avg_valid_loss < best_loss - min_delta:
                     best_loss = avg_valid_loss
                     patience_counter = 0
-                    print(f">>> New best loss: {best_loss:.6f}")
                 else:
                     patience_counter += 1
-                    print(f">>> No improvement ({patience_counter}/{patience})")
-                    
                     if patience_counter >= patience:
-                        print(f"\n{'='*60}")
-                        print(f"Early stopping triggered at epoch {epoch}")
-                        print(f"Best loss: {best_loss:.6f}")
-                        print(f"{'='*60}\n")
+                        print(f"\nEarly stopping at epoch {epoch}")
                         break
 
-        # During training/validation:
-        # metrics are defined before the loop entry
-        # but if validation is not executed in these loop,
-        # metrics dictionary refers legacy metrics
         metrics = {
             'loss': avg_epoch_loss,
-            'ber_last_iter': last_iter_ber,
-            'fer_last_iter': last_iter_fer,
+            'ber_entire_iter': ber.tolist() if epoch % validate_epoch_step == 0 else [0] * len(snr_matrix),
+            'fer_entire_iter': fer.tolist() if epoch % validate_epoch_step == 0 else [0] * len(snr_matrix),
+            'ber_last_iter': last_iter_ber.tolist(),
+            'fer_last_iter': last_iter_fer.tolist(),
         }
         if epoch % validate_epoch_step == 0:
             metrics['loss'] = avg_valid_loss

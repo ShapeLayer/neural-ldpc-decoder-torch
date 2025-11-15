@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 from typing import Dict, Any, Optional
+import numpy as np
 
 class MetricsLogger:
     """Utility for logging training metrics to text file"""
@@ -21,7 +22,7 @@ class MetricsLogger:
     def log(
         self,
         epoch: int,
-        metrics: Dict[str, float],
+        metrics: Dict[str, Any],
         checkpoint_filename: str,
         config: Optional[Dict[str, Any]] = None
     ):
@@ -30,7 +31,7 @@ class MetricsLogger:
         
         Args:
             epoch: Current epoch number
-            metrics: Dictionary of metrics to log
+            metrics: Dictionary of metrics to log (can contain arrays or scalars)
             checkpoint_filename: Associated checkpoint filename
             config: Optional configuration (written as header on first call)
         """
@@ -47,10 +48,21 @@ class MetricsLogger:
             
             metric_strs = []
             for key, value in metrics.items():
-                if 'ber' in key.lower():
-                    metric_strs.append(f"{value:.6e}")
+                # Handle numpy arrays (per-SNR values)
+                if isinstance(value, np.ndarray):
+                    if 'ber' in key.lower():
+                        arr_str = '[' + ' '.join([f'{v:.6e}' for v in value]) + ']'
+                    else:
+                        arr_str = '[' + ' '.join([f'{v:.6f}' for v in value]) + ']'
+                    metric_strs.append(arr_str)
+                # Handle scalar values
+                elif isinstance(value, (int, float, np.number)):
+                    if 'ber' in key.lower():
+                        metric_strs.append(f"{value:.6e}")
+                    else:
+                        metric_strs.append(f"{value:.6f}")
                 else:
-                    metric_strs.append(f"{value:.6f}")
+                    metric_strs.append(str(value))
             
             f.write(", ".join(metric_strs))
             f.write(f", {checkpoint_filename}\n")
@@ -60,11 +72,14 @@ class MetricsLogger:
         Check if current BER is the best so far
         
         Args:
-            ber: Current BER value
+            ber: Current BER value (scalar or array - will use mean if array)
             
         Returns:
             True if this is a new best BER
         """
+        if isinstance(ber, np.ndarray):
+            ber = float(np.mean(ber))
+        
         if ber < self.best_ber:
             self.best_ber = ber
             return True
