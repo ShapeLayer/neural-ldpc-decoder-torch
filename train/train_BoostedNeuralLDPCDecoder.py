@@ -156,9 +156,9 @@ def train_boosted_neural_ldpc_decoder(
     loss_type = LossType.BCE
     etha_init = 1.0  # Exponential weighting: 0=last iter only, 1.0=equal weight, >1=favor early iters
     learning_rate = LearningRate(
-        initial_lr=0.01,
-        decay_rate=0.5,
-        decay_steps=250,
+        initial_lr=0.001,
+        decay_rate=0,
+        decay_steps=0,
     )
     train_is_y_all_zero = param_train_is_y_all_zero
     train_total_epochs = param_train_total_epochs
@@ -171,10 +171,10 @@ def train_boosted_neural_ldpc_decoder(
 
     # Validating
     # Setting checkpoint_step and log_metrics_step into multiple of validate_epoch step is recommended.
-    validate_epoch_step = 25
-    checkpoint_step = validate_epoch_step * 2
+    validate_epoch_step = 5
+    checkpoint_step = validate_epoch_step
     log_metrics_step = 5
-    train_progress_inform_step = 10
+    train_progress_inform_step = 5
 
     # Training iteration parameters
     training_iter_start = fixed_iter
@@ -289,6 +289,7 @@ def train_boosted_neural_ldpc_decoder(
                 
                 # Single backward pass propagates gradients through ALL iterations
                 total_loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
                 model._apply_constraints()
                 
@@ -356,6 +357,7 @@ def train_boosted_neural_ldpc_decoder(
                     y_i = torch.tensor(y_i, dtype=torch.float32, device=device)
                     
                     outputs = model(x_i)
+                    print(outputs)
                     loss = criterion(outputs, y_i)
                     valid_loss += loss.item()
                     

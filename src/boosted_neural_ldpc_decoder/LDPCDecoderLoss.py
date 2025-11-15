@@ -71,7 +71,7 @@ class LDPCDecoderLoss(nn.Module):
         _coeff = 0
         
         for curr_iter in range(
-            len(outputs) if is_valid != 1 else 1
+            (len(outputs) if is_valid != 1 else 1) - 1, -1, -1
         ):
             now_actual = outputs[curr_iter] if is_valid != 1 else outputs
             now_expect = expected[curr_iter] if is_valid == 3 else expected
