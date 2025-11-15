@@ -160,7 +160,9 @@ class BoostedNeuralLDPCDecoder(nn.Module):
             if sharing_type in [1, 2, 3]:
                 iterations_to_create = [i for i in range(self.iter_node_counts)]
             else:
-                iterations_to_create = [self.iter_node_counts]
+                iterations_to_create = [0]
+                if self.fixed_iterative_nodes is not None and len(self.fixed_iterative_nodes) > 0:
+                    iterations_to_create = self.fixed_iterative_nodes
                 
             for iteration in iterations_to_create:
                 for param_type in [ParamType.Weight, ParamType.Bias]:
@@ -222,12 +224,11 @@ class BoostedNeuralLDPCDecoder(nn.Module):
             return self._get_param(param_type, node_type, curr_iter)
         elif sharing_type in [4, 5]:
             # Fixed weights - use weights from fixed iterations
-            if self.fixed_iterative_nodes:
+            if self.fixed_iterative_nodes and len(self.fixed_iterative_nodes) > 0:
                 # Find the closest fixed iteration that's less than or equal to curr_iter
                 valid_iters = [i for i in self.fixed_iterative_nodes if i <= curr_iter]
                 if valid_iters:
-                    iter_idx = max(valid_iters)
-                    return self._get_param(param_type, node_type, iter_idx)
+                    return self._get_param(param_type, node_type, max(valid_iters))
                 # If no valid fixed iteration, use the first one
                 return self._get_param(param_type, node_type, self.fixed_iterative_nodes[0])
             # If no fixed iterations specified, use iteration 0
@@ -318,9 +319,9 @@ class BoostedNeuralLDPCDecoder(nn.Module):
 
         for curr_iter in iteration:
             if is_input_iterable:
-                xa_origin = xa_input.clone()
+                xa_origin = xa[curr_iter].clone()
                 xa_input = xa[curr_iter].transpose(1, 2)  # [batch, Z, N]
-
+            
             vn_weight = self.fetch_param(ParamType.Weight, NodeType.VN, curr_iter)
 
             if self.node_weight_sharing_config.get(NodeType.VN) == 2 or \

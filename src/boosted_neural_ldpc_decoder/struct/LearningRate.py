@@ -15,9 +15,13 @@ class LearningRate:
             return self.lr
         if self.decay_steps <= 0:
             return self.lr
-        self._calls += 1
+        
         _lr = self.lr
-        if self._calls % self.decay_steps == 0:
+        self._calls += 1
+        
+        # Only decay at decay_steps intervals
+        if self._calls >= self.decay_steps:
             self.lr *= self.decay_rate
             self._calls = 0
+        
         return _lr
