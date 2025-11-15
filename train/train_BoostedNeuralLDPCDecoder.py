@@ -357,7 +357,6 @@ def train_boosted_neural_ldpc_decoder(
                     y_i = torch.tensor(y_i, dtype=torch.float32, device=device)
                     
                     outputs = model(x_i)
-                    print(outputs)
                     loss = criterion(outputs, y_i)
                     valid_loss += loss.item()
                     
